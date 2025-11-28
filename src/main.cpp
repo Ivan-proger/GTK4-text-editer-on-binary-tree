@@ -243,8 +243,20 @@ protected:
             Tree t;
             bf.loadTree(t);
             char* txt = t.toText();
-            if (txt) { m_textview.get_buffer()->set_text(txt); delete[] txt; }
-            else m_textview.get_buffer()->set_text("");
+            if (!txt) {
+                m_textview.get_buffer()->set_text("");
+            } else {
+                // Проверяем валидность UTF-8; если невалидно — исправляем
+                if (!g_utf8_validate(txt, -1, nullptr)) {
+                    // g_utf8_make_valid вернёт новый буфер с заменами некорректных байт на U+FFFD
+                    gchar* fixed = g_utf8_make_valid(txt, -1);
+                    m_textview.get_buffer()->set_text(fixed);
+                    g_free(fixed);
+                } else {
+                    m_textview.get_buffer()->set_text(txt);
+                }
+                delete[] txt;
+            }
             bf.close();
             set_status("Loaded binary: " + path);
         } catch (const std::exception& e) {
@@ -258,7 +270,7 @@ protected:
         try {
             Glib::ustring text = m_textview.get_buffer()->get_text();
             Tree t;
-            t.fromText(text.c_str());
+            t.fromText(text.c_str(), text.bytes());
             BinaryTreeFile bf;
             if (!bf.openFile(path.c_str())) { set_status("Err open: " + path); return; }
             bf.saveTree(t);
@@ -290,7 +302,7 @@ protected:
             Glib::ustring text = m_textview.get_buffer()->get_text();
             std::ofstream out(path, std::ios::binary);
             if (!out) { set_status("Err write txt: " + path); return; }
-            out.write(text.data(), text.size());
+            out.write(text.data(), text.bytes());
             set_status("Saved txt: " + path);
         } catch (const std::exception& e) {
             set_status(std::string("Error: ") + e.what());

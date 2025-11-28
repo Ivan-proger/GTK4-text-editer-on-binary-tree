@@ -58,8 +58,11 @@ public:
     bool isEmpty() const;
 
     // Методы для работы с данными
-    void fromText(const char* text);
+    void fromText(const char* text, int len);
     char* toText(); // Возвращает указатель, который нужно удалить через delete[]
+    
+    // Поиск строки по ее номеру в тексте
+    char* getLine(int lineNumber);
 
     // Геттеры/Сеттеры для сериализатора
     Node* getRoot() const;

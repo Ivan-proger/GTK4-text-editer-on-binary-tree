@@ -7,6 +7,9 @@
 
 class BinaryTreeFile : public std::fstream {
 private:
+    // Имя файла, чтобы можно было усечь/переоткрыть при сохранении
+    std::string m_filename; 
+
     // Рекурсивные методы I/O, работающие с узлами (Node*)
     std::int64_t  writeNodeRecursive(Node* node);
     Node* readNodeRecursive(std::int64_t offset, std::int64_t fileSize);

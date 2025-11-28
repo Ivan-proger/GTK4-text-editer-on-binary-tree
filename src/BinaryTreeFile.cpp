@@ -21,12 +21,15 @@ BinaryTreeFile::~BinaryTreeFile() {
 }
 
 bool BinaryTreeFile::openFile(const char* filename) {
-    open(filename, std::ios::binary | std::ios::in | std::ios::out);
+    m_filename = filename;
+    // Открываем для чтения/записи (если файла нет — создаём)
+    open(m_filename.c_str(), std::ios::binary | std::ios::in | std::ios::out);
     if (!is_open()) {
-        // Создаем, если не существует
-        open(filename, std::ios::binary | std::ios::out);
-        close();
-        open(filename, std::ios::binary | std::ios::in | std::ios::out);
+        // Создаем файл, затем снова открываем
+        std::ofstream create(m_filename.c_str(), std::ios::binary | std::ios::out);
+        if (!create) return false;
+        create.close();
+        open(m_filename.c_str(), std::ios::binary | std::ios::in | std::ios::out);
     }
     return is_open();
 }
@@ -68,10 +71,26 @@ std::int64_t BinaryTreeFile::writeNodeRecursive(Node* node) {
     return currentPos;
 }
 
-
 void BinaryTreeFile::saveTree(const Tree& tree) {
-    if (!is_open()) return;
+    if (m_filename.empty()) {
+        throw std::runtime_error("No file opened for saving (filename missing)");
+    }
 
+    // Закрыть текущий дескриптор, если открыт, и открыть файл в режиме truncate
+    if (is_open()) close();
+
+    // Открываем файл в режиме truncate, затем переключаемся обратно на in|out (чтобы работать теми же seekp/tellp)
+    open(m_filename.c_str(), std::ios::binary | std::ios::in | std::ios::out | std::ios::trunc);
+    if (!is_open()) {
+        // Если не получилось открыть с in/out|trunc, попробуем через ofstream
+        std::ofstream out(m_filename.c_str(), std::ios::binary | std::ios::trunc);
+        if (!out) throw std::runtime_error("Cannot open file for writing");
+        out.close();
+        open(m_filename.c_str(), std::ios::binary | std::ios::in | std::ios::out);
+        if (!is_open()) throw std::runtime_error("Cannot reopen file for writing");
+    }
+
+    // Теперь файл пуст — можно писать
     // Запишем заголовок: magic(4) + version(4) + rootOffset(8) (всего 16 байт)
     seekp(0, std::ios::beg);
     write(FILE_MAGIC, 4);

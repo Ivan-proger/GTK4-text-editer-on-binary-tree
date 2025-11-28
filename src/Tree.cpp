@@ -17,18 +17,34 @@ LeafNode::~LeafNode() {
 
 NodeType LeafNode::getType() const { return NODE_LEAF; }
 
+int countLines(Node* node) {
+    if (!node) return 0;
+        
+    if (node->getType() == NODE_INTERNAL) {
+        // У внутреннего узла это значение уже посчитано и закэшировано
+        return ((InternalNode*)node)->subtreeCount;
+    } else {
+        // У листа считаем \n "на лету"
+        LeafNode* leaf = (LeafNode*)node;
+        int count = 0;
+        for (int i = 0; i < leaf->length; i++) {
+            if (leaf->data[i] == '\n') count++;
+        }
+        // Если текст не заканчивается на \n, но данные есть, это считается за строку
+        // Но для точной математики разбиения часто проще считать именно символы \n.
+        // Давай договоримся: subtreeCount хранит количество символов '\n'.
+        return count; 
+    }
+}
+
 InternalNode::InternalNode(Node* l, Node* r) {
     this->left = l;
     this->right = r;
-    this->subtreeCount = 1;
-    if (l) {
-        if (l->getType() == NODE_INTERNAL) this->subtreeCount += ((InternalNode*)l)->subtreeCount;
-        else this->subtreeCount++;
-    }
-    if (r) {
-        if (r->getType() == NODE_INTERNAL) this->subtreeCount += ((InternalNode*)r)->subtreeCount;
-        else this->subtreeCount++;
-    }
+    this->subtreeCount = 0; // Теперь это счетчик строк!
+    
+    // Суммируем строки левого и правого ребенка
+    if (l) this->subtreeCount += countLines(l);
+    if (r) this->subtreeCount += countLines(r);
 }
 
 NodeType InternalNode::getType() const { return NODE_INTERNAL; }
@@ -76,26 +92,44 @@ void Tree::setRoot(Node* newRoot) {
 // --- Логика построения из текста ---
 
 Node* Tree::buildFromTextRecursive(const char* text, int len) {
-    if (len <= 0) return nullptr;
-    
-    // Для теста разбиваем мелко (по 4 символа), чтобы дерево было ветвистым
-    const int MAX_CHUNK = 4; 
+if (len <= 0) return nullptr;
 
-    if (len <= MAX_CHUNK) {
+    // 1. Считаем количество переносов строк в текущем куске
+    int newlines = 0;
+    for(int i = 0; i < len; i++) if(text[i] == '\n') newlines++;
+
+    // 2. Если строк мало (например, < 2), создаем Лист
+    // Это базовый случай рекурсии
+    if (newlines < 2) {
         return new LeafNode(text, len);
     }
 
-    int mid = len / 2;
-    Node* left = buildFromTextRecursive(text, mid);
-    Node* right = buildFromTextRecursive(text + mid, len - mid);
+    // 3. Ищем середину по СТРОКАМ (а не по байтам)
+    int targetNewline = newlines / 2;
+    int splitIndex = 0;
+    int currentNewlineCount = 0;
+
+    for (int i = 0; i < len; i++) {
+        if (text[i] == '\n') {
+            currentNewlineCount++;
+            if (currentNewlineCount == targetNewline) {
+                splitIndex = i + 1; // Режем сразу после \n
+                break;
+            }
+        }
+    }
+
+    // Рекурсивно создаем детей
+    Node* left = buildFromTextRecursive(text, splitIndex);
+    Node* right = buildFromTextRecursive(text + splitIndex, len - splitIndex);
+
     return new InternalNode(left, right);
 }
 
-void Tree::fromText(const char* text) {
+void Tree::fromText(const char* text, int len) {
     clear();
-    if (!text) return;
-    int len = 0;
-    while(text[len] != '\0') len++;
+    // Используем переданную длину len, а не ищем \0
+    if (!text || len <= 0) return;
     root = buildFromTextRecursive(text, len);
 }
 
@@ -139,4 +173,76 @@ char* Tree::toText() {
     collectTextRecursive(root, buffer, pos);
     buffer[pos] = '\0';
     return buffer;
+}
+
+// Функция ищет нужный лист и индекс строки внутри него.
+// Возвращает указатель на лист и изменяет localLineIndex
+LeafNode* findLeafRecursive(Node* node, int& lineIndex) {
+    if (!node) return nullptr;
+
+    if (node->getType() == NODE_LEAF) {
+        return (LeafNode*)node;
+    }
+
+    InternalNode* inner = (InternalNode*)node;
+    int leftLines = countLines(inner->left);
+
+    if (lineIndex < leftLines) {
+        // Идем влево, индекс строки не меняется
+        return findLeafRecursive(inner->left, lineIndex);
+    } else {
+        // Идем вправо, уменьшаем индекс на количество строк слева
+        lineIndex -= leftLines;
+        return findLeafRecursive(inner->right, lineIndex);
+    }
+}
+
+char* Tree::getLine(int lineNumber) {
+    if (!root || lineNumber < 0) return nullptr;
+
+    int localIndex = lineNumber;
+    // 1. Быстрый спуск по дереву за O(log N)
+    LeafNode* leaf = findLeafRecursive(root, localIndex);
+
+    if (!leaf) return nullptr;
+
+    // 2. Теперь мы внутри листа. Нам нужно найти localIndex-ную строку
+    // localIndex = 0 означает первую строку ВНУТРИ этого листа
+    
+    int currentLine = 0;
+    int startPos = 0;
+    int endPos = -1;
+
+    // Пробегаем по листу, ищем начало и конец
+    for (int i = 0; i < leaf->length; i++) {
+        if (currentLine == localIndex) {
+            // Мы нашли нужную строку
+            // Ищем её конец (либо \n, либо конец данных)
+            int j = i;
+            while (j < leaf->length && leaf->data[j] != '\n') {
+                j++;
+            }
+            endPos = j; // j указывает на \n или на позицию за пределами массива
+            startPos = i;
+            break;
+        }
+
+        if (leaf->data[i] == '\n') {
+            currentLine++;
+        }
+    }
+
+    // Если строку не нашли (например, запросили строку 5, а в листе их всего 2)
+    if (endPos == -1) return nullptr;
+
+    // 3. Выделяем память и копируем
+    int lineLen = endPos - startPos;
+    char* result = new char[lineLen + 1];
+    
+    if (lineLen > 0) {
+        std::memcpy(result, leaf->data + startPos, lineLen);
+    }
+    result[lineLen] = '\0'; // Обязательно добавляем терминальный ноль
+
+    return result;
 }

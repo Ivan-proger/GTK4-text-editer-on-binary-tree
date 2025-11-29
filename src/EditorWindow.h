@@ -1,0 +1,53 @@
+#ifndef EDITORWINDOW_H
+#define EDITORWINDOW_H
+
+#include <gtkmm.h>
+#include <string>
+
+// Вспомогательная функция для подсчета слов, объявленная здесь, 
+// но определенная в .cpp для инкапсуляции.
+static size_t count_words(const std::string& s);
+
+class EditorWindow : public Gtk::ApplicationWindow {
+public:
+    EditorWindow();
+    virtual ~EditorWindow();
+
+protected:
+    // Вспомогательные методы
+    void apply_system_theme();
+    void set_status(const std::string& s);
+
+    // Обработчики сигналов
+    void on_path_entry_changed();
+    void on_textbuffer_changed();
+    void on_file_entry_activate();
+    
+    // Логика файлов/дерева
+    void on_load_binary();
+    void on_save_binary();
+    void on_load_text();
+    void on_save_text();
+
+    // Поиск и навигация
+    void on_search_activate();
+    void on_show_numbers_clicked();
+    void go_to_line_index(int lineIndex0Based);
+
+private:
+    // Элементы пользовательского интерфейса
+    Gtk::HeaderBar m_header_bar;
+    Gtk::Box m_root{Gtk::Orientation::VERTICAL};
+    Gtk::Entry m_file_entry;
+    Gtk::Button m_btn_load_bin;
+    Gtk::Button m_btn_save_bin;
+    Gtk::Button m_btn_load_txt;
+    Gtk::Button m_btn_save_txt;
+    Gtk::SearchEntry m_search;                 
+    Gtk::Button m_btn_show_numbers{"#️⃣ Lines"};
+    Gtk::ScrolledWindow m_scrolled;
+    Gtk::TextView m_textview;
+    Gtk::Label m_status;
+};
+
+#endif // EDITORWINDOW_H

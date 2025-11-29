@@ -3,14 +3,14 @@
 
 // --- Структуры данных (Узлы) ---
 
-enum NodeType : char {
+enum class NodeType : char {
     NODE_INTERNAL = 0,
     NODE_LEAF = 1
 };
 
 struct Node {
     virtual NodeType getType() const = 0;
-    virtual ~Node() {}
+    virtual ~Node() = default;
 };
 
 struct LeafNode : public Node {
@@ -18,17 +18,19 @@ struct LeafNode : public Node {
     char* data;
 
     LeafNode(const char* str, int len);
-    ~LeafNode();
+    ~LeafNode() override;
     NodeType getType() const override;
 };
 
 struct InternalNode : public Node {
     Node* left;
     Node* right;
+
+    // хранит количество строк в поддереве
     int subtreeCount;
 
     InternalNode(Node* l, Node* r);
-    ~InternalNode() {}
+    ~InternalNode() override = default;
     NodeType getType() const override;
 };
 

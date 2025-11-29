@@ -12,6 +12,9 @@ private:
 
     // Рекурсивные методы I/O, работающие с узлами (Node*)
     std::int64_t  writeNodeRecursive(Node* node);
+
+    Node* readLeafNodeAt(std::int64_t offset, std::int64_t fileSize);
+    Node* readInternalNodeAt(std::int64_t offset, std::int64_t fileSize);
     Node* readNodeRecursive(std::int64_t offset, std::int64_t fileSize);
 
     // Вспомогательные: чтение/запись в little-endian фиксированных типов
@@ -25,7 +28,7 @@ private:
 
 public:
     BinaryTreeFile();
-    ~BinaryTreeFile();
+    ~BinaryTreeFile() override;
 
     bool openFile(const char* filename);
     

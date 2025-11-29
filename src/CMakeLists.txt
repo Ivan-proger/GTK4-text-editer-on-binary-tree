@@ -42,9 +42,10 @@ target_include_directories(tree_lib
 # Базовые warning flags
 target_compile_options(tree_lib PRIVATE -Wall -Wextra -Wpedantic)
 
-# --- исполняемый файл GUI ---
+# --- исполняемый файл и GUI ---
 add_executable(editor
     main.cpp
+    EditorWindow.cpp
 )
 
 # include dirs от pkg-config (SYSTEM, чтобы не показывать warning-ы из внешнего кода)

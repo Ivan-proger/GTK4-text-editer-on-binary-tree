@@ -49,7 +49,7 @@ void test_memory_tree_logic() {
     run_test("1.2 Импорт: Короткий текст ('OOP')", text_match);
 
     // --- ТЕСТ 1.3: Проверка структуры (корневой узел) ---
-    bool structure_ok = (tree.getRoot() != nullptr && tree.getRoot()->getType() == NODE_LEAF);
+    bool structure_ok = (tree.getRoot() != nullptr && tree.getRoot()->getType() == NodeType::NODE_LEAF);
     run_test("1.3 Структура: 'OOP' - один Лист", structure_ok);
     
     // --- ТЕСТ 1.4: Импорт длинной строки (проверка структуры) ---
@@ -361,7 +361,7 @@ void stress_truncated_leaf_len() {
         uint64_t uro = static_cast<uint64_t>(ro);
         for (int i = 0; i < 8; ++i) out.put(static_cast<char>((uro >> (8*i)) & 0xFF));
         // теперь байт 16: type = NODE_LEAF (1)
-        out.put(static_cast<char>(NODE_LEAF));
+        out.put(static_cast<char>(NodeType::NODE_LEAF));
         // len = large (например INT32_MAX / 2 чтобы не overflow при проверки)
         int32_t huge_len = std::numeric_limits<int32_t>::max() / 2;
         uint32_t ulen = static_cast<uint32_t>(huge_len);

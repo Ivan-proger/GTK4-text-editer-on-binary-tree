@@ -2,21 +2,32 @@
 #include <stdexcept>
 #include <iostream>
 #include <cstring>
+#include <fstream> // Добавляем, чтобы использовать std::ofstream
+
+// Предполагается, что Tree.h и BinaryTreeFile.h включают корректные определения
+// узлов и класса Tree, как было в предыдущем шаге.
 
 // ==========================================
-// Реализация класса BinaryTreeFile
+// Константы
 // ==========================================
-
 namespace {
     constexpr char FILE_MAGIC[4] = {'T','R','E','E'}; // NOSONAR
     constexpr std::uint32_t FILE_VERSION = 1;
     constexpr std::int64_t OFFSET_NONE = -1;
 }
 
+// ==========================================
+// Обработка ошибок
+// ==========================================
+
 class BinaryTreeFileError : public std::runtime_error {
 public:
-    using std::runtime_error::runtime_error; // унаследовать все конструкторы базового класса
+    using std::runtime_error::runtime_error; 
 };
+
+// ==========================================
+// Реализация класса BinaryTreeFile
+// ==========================================
 
 BinaryTreeFile::BinaryTreeFile() : std::fstream() {}
 
@@ -43,6 +54,7 @@ bool BinaryTreeFile::openFile(const char* filename) {
 std::int64_t BinaryTreeFile::writeNodeRecursive(Node* node) {
     if (!node) return OFFSET_NONE;
 
+    // Сначала рекурсивно сохраняем детей (Post-order traversal)
     std::int64_t leftOff = OFFSET_NONE;
     std::int64_t rightOff = OFFSET_NONE;
 
@@ -52,14 +64,17 @@ std::int64_t BinaryTreeFile::writeNodeRecursive(Node* node) {
         rightOff = writeNodeRecursive(inner->right);
     }
 
+    // Запоминаем текущую позицию для смещения
     seekp(0, std::ios::end);
     auto currentPos = static_cast<std::int64_t>(tellp());
 
+    // 1. Записываем тип узла
     auto type = static_cast<char>(node->getType());
     write(&type, sizeof(char));
     if (!good()) throw BinaryTreeFileError("I/O error writing node type");
 
     if (node->getType() == NodeType::NODE_LEAF) {
+        // 2. Лист: длина + данные
         auto leaf = static_cast<LeafNode*>(node);
         write_le_int32(leaf->length);
         if (leaf->length > 0) {
@@ -67,10 +82,12 @@ std::int64_t BinaryTreeFile::writeNodeRecursive(Node* node) {
             if (!good()) throw BinaryTreeFileError("I/O error writing leaf data");
         }
     } else {
-        auto inner = static_cast<InternalNode*>(node);
+        // 2. Внутренний узел: смещения детей
+        // МЫ БОЛЬШЕ НЕ ПИШЕМ totalLength И totalLineCount,
+        // так как они вычисляются при загрузке конструктором InternalNode.
         write_le_int64(leftOff);
         write_le_int64(rightOff);
-        write_le_int32(inner->subtreeCount);
+        // (Удалено: write_le_int32(inner->lineCount);)
     }
     return currentPos;
 }
@@ -80,13 +97,11 @@ void BinaryTreeFile::saveTree(const Tree& tree) {
         throw BinaryTreeFileError("No file opened for saving (filename missing)");
     }
 
-    // Закрыть текущий дескриптор, если открыт, и открыть файл в режиме truncate
     if (is_open()) close();
 
-    // Открываем файл в режиме truncate, затем переключаемся обратно на in|out (чтобы работать теми же seekp/tellp)
+    // Открываем файл в режиме truncate для очистки
     open(m_filename.c_str(), std::ios::binary | std::ios::in | std::ios::out | std::ios::trunc);
     if (!is_open()) {
-        // Если не получилось открыть с in/out|trunc, попробуем через ofstream
         std::ofstream out(m_filename.c_str(), std::ios::binary | std::ios::trunc);
         if (!out) throw BinaryTreeFileError("Cannot open file for writing");
         out.close();
@@ -94,19 +109,17 @@ void BinaryTreeFile::saveTree(const Tree& tree) {
         if (!is_open()) throw BinaryTreeFileError("Cannot reopen file for writing");
     }
 
-    // Теперь файл пуст — можно писать
-    // Запишем заголовок: magic(4) + version(4) + rootOffset(8) (всего 16 байт)
+    // Заголовок: magic(4) + version(4) + rootOffset(8) (всего 16 байт)
     seekp(0, std::ios::beg);
     write(FILE_MAGIC, 4);
-    if (!good()) throw BinaryTreeFileError("I/O error writing magic");
     write_le_uint32(FILE_VERSION);
-    // временно пишем OFFSET_NONE в качестве плэйсхолдера
+    // Плэйсхолдер для смещения корня (8 байт)
     write_le_int64(OFFSET_NONE);
 
-    // Пишем узлы (post-order) — функция вернёт смещение root
+    // Пишем узлы (post-order), получаем смещение корня
     std::int64_t rootOffset = writeNodeRecursive(tree.getRoot());
 
-    // Записываем реальный rootOffset в заголовок
+    // Обновляем реальный rootOffset в заголовок
     seekp(4 + 4, std::ios::beg); // magic(4) + version(4)
     write_le_int64(rootOffset);
     flush();
@@ -116,7 +129,7 @@ void BinaryTreeFile::saveTree(const Tree& tree) {
 // --- Загрузка ---
 
 Node* BinaryTreeFile::readLeafNodeAt(std::int64_t offset, std::int64_t fileSize) {
-    // убедимся, что есть место для длины
+    // Проверка, что хватает места для типа + длины (1 + 4 байта)
     if (std::int64_t minNeeded = offset + 1 + static_cast<std::int64_t>(sizeof(std::int32_t));
         minNeeded > fileSize) {
         throw BinaryTreeFileError("Corrupt file: not enough bytes for leaf length");
@@ -125,12 +138,12 @@ Node* BinaryTreeFile::readLeafNodeAt(std::int64_t offset, std::int64_t fileSize)
     std::int32_t len = read_le_int32();
     if (len < 0) throw BinaryTreeFileError("Corrupt file: negative leaf length");
 
+    // Проверка, что данные листа влезают в файл
     if (std::int64_t needed = offset + 1 + static_cast<std::int64_t>(sizeof(std::int32_t)) + static_cast<std::int64_t>(len);
         needed > fileSize) {
         throw BinaryTreeFileError("Corrupt file: leaf data exceeds file size");
     }
 
-    // manual allocation is intentional — preserve caller semantics (NOSONAR)
     char* buf = new char[len]; // NOSONAR
     if (len > 0) {
         read(buf, static_cast<std::streamsize>(len));
@@ -140,34 +153,36 @@ Node* BinaryTreeFile::readLeafNodeAt(std::int64_t offset, std::int64_t fileSize)
         }
     }
 
-    // LeafNode ctor copies buffer (existing behavior)
+    // LeafNode ctor теперь сам посчитает lineCount, используя данные из buf.
     Node* node = new LeafNode(buf, len); // NOSONAR
     delete[] buf; // NOSONAR
     return node;
 }
 
 Node* BinaryTreeFile::readInternalNodeAt(std::int64_t offset, std::int64_t fileSize) {
-    // проверяем, что в заголовке хватает места для двух int64 + int32
-    if (std::int64_t headerNeeded = offset + 1 + static_cast<std::int64_t>(sizeof(std::int64_t)) * 2 + static_cast<std::int64_t>(sizeof(std::int32_t));
+    // Внутренний узел теперь содержит только 1 байт типа + 2 * int64 (смещения детей)
+    if (std::int64_t headerNeeded = offset + 1 + static_cast<std::int64_t>(sizeof(std::int64_t)) * 2;
         headerNeeded > fileSize) {
-        throw BinaryTreeFileError("Corrupt file: not enough bytes for internal header");
+        throw BinaryTreeFileError("Corrupt file: not enough bytes for internal header (offsets)");
     }
 
     std::int64_t lOff = read_le_int64();
     std::int64_t rOff = read_le_int64();
-    std::int32_t count = read_le_int32();
+    // (Удалено: чтение int32 count, т.к. данные вычисляются конструктором)
 
-    // валидация оффсетов
+    // Валидация смещений
     if ((lOff != OFFSET_NONE && (lOff < 0 || lOff >= fileSize)) ||
         (rOff != OFFSET_NONE && (rOff < 0 || rOff >= fileSize))) {
         throw BinaryTreeFileError("Corrupt file: child offset out of bounds");
     }
 
+    // Рекурсивно читаем детей
     Node* l = readNodeRecursive(lOff, fileSize);
     Node* r = readNodeRecursive(rOff, fileSize);
 
+    // InternalNode ctor теперь сам рассчитает totalLength и totalLineCount на основе l и r!
     InternalNode* node = new InternalNode(l, r); // NOSONAR
-    node->subtreeCount = count;
+    // (Удалено: node->lineCount = count; — это больше не нужно!)
     return node;
 }
 
@@ -185,14 +200,18 @@ Node* BinaryTreeFile::readNodeRecursive(std::int64_t offset, std::int64_t fileSi
         throw BinaryTreeFileError("I/O error reading node type");
 
     if (type == static_cast<char>(NodeType::NODE_LEAF)) {
+        // Необходимо снова установить указатель чтения, так как read() в readLeafNodeAt будет брать данные
+        // Смещение узла (offset) указывает на начало типа. Мы уже прочитали тип.
+        // Чтобы начать чтение данных листа, нужно вернуться на позицию после типа.
+        seekg(offset + 1, std::ios::beg);
         return readLeafNodeAt(offset, fileSize);
     } else if (type == static_cast<char>(NodeType::NODE_INTERNAL)) {
+        seekg(offset + 1, std::ios::beg);
         return readInternalNodeAt(offset, fileSize);
     } else {
         throw BinaryTreeFileError("Unknown node type in file");
     }
 }
-
 
 
 void BinaryTreeFile::loadTree(Tree& tree) {
@@ -202,12 +221,11 @@ void BinaryTreeFile::loadTree(Tree& tree) {
 
     seekg(0, std::ios::end);
     auto fileSize = static_cast<std::int64_t>(tellg());
-    if (fileSize <= 0) return;
+    if (fileSize < 16) return; // Минимальный размер заголовка
 
     seekg(0, std::ios::beg);
     char magic[4]; // NOSONAR
     read(magic, 4);
-    if (gcount() != 4 || !good()) throw BinaryTreeFileError("I/O error reading magic");
     if (std::memcmp(magic, FILE_MAGIC, 4) != 0) throw BinaryTreeFileError("Bad file magic - not a tree file");
 
     if (read_le_uint32() != FILE_VERSION) throw BinaryTreeFileError("Unsupported file version");
@@ -217,12 +235,13 @@ void BinaryTreeFile::loadTree(Tree& tree) {
         tree.setRoot(nullptr);
         return;
     }
-    if (rootOffset < 0 || rootOffset >= fileSize) throw BinaryTreeFileError("Invalid root offset in header");
 
     Node* newRoot = readNodeRecursive(rootOffset, fileSize);
     tree.setRoot(newRoot);
 }
 
+
+// --- Функции для записи/чтения в Little-Endian (без изменений) ---
 
 void BinaryTreeFile::write_le_uint32(std::uint32_t v) {
     unsigned char b[4]; // NOSONAR

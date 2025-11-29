@@ -1,7 +1,8 @@
 #ifndef TREE_H
 #define TREE_H
 
-// --- Структуры данных (Узлы) ---
+// Настройка размера листа. 4KB - золотая середина (размер страницы памяти)
+const int MAX_LEAF_SIZE = 4096; 
 
 enum class NodeType : char {
     NODE_INTERNAL = 0,
@@ -9,48 +10,58 @@ enum class NodeType : char {
 };
 
 struct Node {
+    // Оставляем getType, как ты просил
     virtual NodeType getType() const = 0;
+    
+    // Новые виртуальные методы для быстрого доступа к статистике
+    virtual int getLength() const = 0;     // Вес в байтах
+    virtual int getLineCount() const = 0;  // Вес в строках (\n)
+    
     virtual ~Node() = default;
 };
 
 struct LeafNode : public Node {
     int length;
+    int lineCount; // Кэшированное значение
     char* data;
 
     LeafNode(const char* str, int len);
     ~LeafNode() override;
+    
     NodeType getType() const override;
+    int getLength() const override;
+    int getLineCount() const override;
 };
 
 struct InternalNode : public Node {
     Node* left;
     Node* right;
 
-    // хранит количество строк в поддереве
-    int subtreeCount;
+    // Кэшированные суммы детей
+    int totalLength;
+    int totalLineCount;
 
     InternalNode(Node* l, Node* r);
     ~InternalNode() override = default;
+    
     NodeType getType() const override;
+    int getLength() const override;
+    int getLineCount() const override;
 };
-
-// --- Класс Дерева (Логика в памяти) ---
 
 class Tree {
 private:
     Node* root;
 
-    // Вспомогательные рекурсивные методы
-
     void clearRecursive(Node* node);
-
     Node* buildFromTextRecursive(const char* text, int len);
-
-    int calculateLengthRecursive(Node* node);
-
+    
+    // Вспомогательная рекурсия для сбора текста (теперь проще)
     void collectTextRecursive(Node* node, char* buffer, int& pos);
 
-
+    // Вспомогательная функция для поиска листа по номеру строки
+    // Изменяет localLineIndex, приводя его к индексу внутри найденного листа
+    LeafNode* findLeafByLineRecursive(Node* node, int& localLineIndex);
 
 public:
     Tree();
@@ -59,14 +70,11 @@ public:
     void clear();
     bool isEmpty() const;
 
-    // Методы для работы с данными
     void fromText(const char* text, int len);
-    char* toText(); // Возвращает указатель, который нужно удалить через delete[]
+    char* toText();
     
-    // Поиск строки по ее номеру в тексте
     char* getLine(int lineNumber);
 
-    // Геттеры/Сеттеры для сериализатора
     Node* getRoot() const;
     void setRoot(Node* newRoot);
 };

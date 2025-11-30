@@ -6,7 +6,7 @@
 #include <sstream>
 #include <string>
 
-// Определение вспомогательной функции (НЕ ИЗМЕНЯЛАСЬ)
+// Определение вспомогательной функции
 static size_t count_words(const std::string& s) {
     std::istringstream iss(s);
     size_t cnt = 0;
@@ -14,8 +14,6 @@ static size_t count_words(const std::string& s) {
     while (iss >> w) ++cnt;
     return cnt;
 }
-
-// ----------------------- Реализация EditorWindow -----------------------
 
 EditorWindow::EditorWindow() {
     
@@ -66,7 +64,7 @@ EditorWindow::EditorWindow() {
     m_file_entry.set_hexpand(true);
     file_box.append(m_file_entry);
 
-    // --- Кнопки (ваши стили) ---
+    // --- Кнопки  ---
     m_btn_load_bin.set_label("📂 Load Binary");
     m_btn_save_bin.set_label("💾 Save Binary");
     m_btn_load_txt.set_label("📄 Load Text");
@@ -154,7 +152,7 @@ void EditorWindow::set_status(const std::string& s) {
     m_status.set_text(s);
 }
 
-// ЛОГИКА ОСТАЕТСЯ ТА ЖЕ
+
 void EditorWindow::on_path_entry_changed() {
     auto path = m_file_entry.get_text();
     bool ok = !path.empty();
@@ -257,33 +255,15 @@ void EditorWindow::on_load_binary() {
     try {
         BinaryTreeFile bf;
         if (!bf.openFile(path.c_str())) { set_status("Cannot open binary: " + path); return; }
-        Tree t;
-        bf.loadTree(t);
-        
-        if (char* txt = t.toText(); !txt) {
-            m_textview.get_buffer()->set_text("");
-            m_tree.clear();
-            m_last_text.clear();
-        } else {
-            // Ветвь проверки UTF-8 как у тебя
-            std::string str;
-            if (!g_utf8_validate(txt, -1, nullptr)) {
-                gchar* fixed = g_utf8_make_valid(txt, -1);
-                str = std::string(fixed);
-                g_free(fixed);
-            } else {
-                str = std::string(txt);
-            }
-            delete[] txt; // NOSONAR
+        //  Инициализация дерева
+        m_tree.clear();        
+        bf.loadTree(m_tree);
 
-            // Обновляем Tree и локальный snapshot в атомарной манере
-            m_syncing = true;
-            m_tree.clear();
-            m_tree.fromText(str.c_str(), static_cast<int>(str.size()));
-            m_last_text = str;
-            m_textview.get_buffer()->set_text(str);
-            m_syncing = false;
-        }
+        m_last_text = m_tree.toText();
+
+        // Обновление буфера TextView
+        m_textview.get_buffer()->set_text(m_last_text);
+
         bf.close();
         set_status("Loaded binary: " + path);
     } catch (const std::ios_base::failure& e) {
@@ -317,15 +297,23 @@ void EditorWindow::on_load_text() {
     std::string path = m_file_entry.get_text();
     if (path.empty()) { set_status("Provide path..."); return; }
     try {
+        // Чтение файла целиком в std::string
         std::ifstream in(path, std::ios::binary);
         if (!in) { set_status("Err open txt: " + path); return; }
-        std::string s((std::istreambuf_iterator<char>(in)), {});
+        std::string file_text((std::istreambuf_iterator<char>(in)), {});
+
+        //  Инициализация дерева
         m_syncing = true;
         m_tree.clear();
-        m_tree.fromText(s.c_str(), static_cast<int>(s.size()));
-        m_last_text = s;
-        m_textview.get_buffer()->set_text(s);
+        if (!file_text.empty()) {
+            m_tree.fromText(file_text.c_str(), static_cast<int>(file_text.size()));
+        }
+        m_last_text = file_text;
+
+        // Обновление буфера TextView
+        m_textview.get_buffer()->set_text(file_text);
         m_syncing = false;
+
         set_status("Loaded txt: " + path);
     } catch (const std::ios_base::failure& e) {
         set_status(std::string("File I/O error: ") + e.what());
@@ -337,12 +325,30 @@ void EditorWindow::on_load_text() {
 void EditorWindow::on_save_text() {
     std::string path = m_file_entry.get_text();
     if (path.empty()) { set_status("Provide path..."); return; }
+
     try {
-        Glib::ustring text = m_textview.get_buffer()->get_text();
         std::ofstream out(path, std::ios::binary);
         if (!out) { set_status("Err write txt: " + path); return; }
-        out.write(text.data(), text.bytes());
+
+        if (!m_tree.getRoot()) {
+            // пустое дерево → создаём пустой файл
+            out.close();
+            set_status("Saved txt (empty): " + path);
+            return;
+        }
+
+        int total_len = m_tree.getRoot()->getLength();
+        int chunk_size = 4096; // можно регулировать размер буфера
+
+        for (int offset = 0; offset < total_len; offset += chunk_size) {
+            int len = std::min(chunk_size, total_len - offset);
+            char* buf = m_tree.getTextRange(offset, len);
+            out.write(buf, len);
+            delete[] buf;//NOSONAR  // освобождаем память
+        }
+
         set_status("Saved txt: " + path);
+
     } catch (const std::ios_base::failure& e) {
         set_status(std::string("File I/O error: ") + e.what());
     } catch (const std::bad_alloc&) {
@@ -350,27 +356,32 @@ void EditorWindow::on_save_text() {
     }
 }
 
+
 // --- Поиск и навигация  ---
 void EditorWindow::on_search_activate() {
-    auto query = static_cast<std::string>(m_search.get_text());
-    if (query.empty()) {
+    auto queryStr = static_cast<std::string>(m_search.get_text());
+    if (queryStr.empty()) {
         set_status("Search: empty");
         return;
     }
 
-    // Если query состоит только из цифр — интерпретируем как номер строки (1-based в UI)
+    // --- Поиск по номеру строки (1-based) ---
     bool is_number = true;
-    for (char c : query) if (!std::isdigit(static_cast<unsigned char>(c))) { is_number = false; break; }
+    for (char c : queryStr) {
+        if (!std::isdigit(static_cast<unsigned char>(c))) { 
+            is_number = false; 
+            break; 
+        }
+    }
 
     if (is_number) {
         try {
-            long val = std::stol(query);
+            long val = std::stol(queryStr);
             if (val <= 0) {
                 set_status("Line numbers are 1-based (enter >= 1)");
                 return;
             }
-            // переводим в 0-based
-            go_to_line_index(static_cast<int>(val - 1));
+            go_to_line_index(static_cast<int>(val - 1)); // 0-based
         } catch (const std::invalid_argument&) {
             set_status("Invalid line number format");
         } catch (const std::out_of_range&) {
@@ -379,37 +390,34 @@ void EditorWindow::on_search_activate() {
         return;
     }
 
-    // ---- Текстовый поиск: используем байтовый поиск по std::string ----
+    // --- Текстовый поиск через дерево (эффективнее) ---
     auto buf = m_textview.get_buffer();
     if (!buf) { set_status("No buffer"); return; }
 
-    // Получаем весь текст как std::string (байты UTF-8)
-    auto plain = static_cast<std::string>(buf->get_text());
+    const char* pattern = queryStr.c_str();
+    auto patternLen = static_cast<int>(queryStr.size());
 
-    // Находим первое вхождение (байтовый find)
-    size_t pos = plain.find(query);
-    if (pos == std::string::npos) {
-        set_status("Not found: \"" + query + "\"");
+    // Ищем в дереве
+    int offset = m_tree.findSubstring(pattern, patternLen);
+    if (offset == -1) {
+        set_status("Not found: \"" + queryStr + "\"");
         return;
     }
 
-    size_t start_offset = pos;
-    size_t end_offset = pos + query.size();
-
-    // Получаем TextIters по байтовым оффсетам (get_iter_at_offset принимает int offset)
-    Gtk::TextBuffer::iterator it_start = buf->get_iter_at_offset(static_cast<int>(start_offset));
-    Gtk::TextBuffer::iterator it_end   = buf->get_iter_at_offset(static_cast<int>(end_offset));
+    // Получаем TextIters по найденному оффсету
+    Gtk::TextBuffer::iterator it_start = buf->get_iter_at_offset(offset);
+    Gtk::TextBuffer::iterator it_end   = buf->get_iter_at_offset(offset + patternLen);
 
     // Выделяем и скроллим
     buf->select_range(it_start, it_end);
     m_textview.scroll_to(it_start, 0.0);
 
-    // Для статуса показываем номер строки найденного вхождения
+    // Показываем строку в статусе
     int line_of_match = it_start.get_line() + 1; // 1-based для UI
     set_status("Found at line " + std::to_string(line_of_match));
 }
 
-// Переход к строке (0-based). Использует TextBuffer::get_iter_at_line
+
 void EditorWindow::go_to_line_index(int lineIndex0Based) {
     auto buf = m_textview.get_buffer();
     if (!buf) { set_status("No buffer"); return; }
@@ -449,41 +457,26 @@ void EditorWindow::go_to_line_index(int lineIndex0Based) {
 }
 
 
-// Показать окно с нумерацией строк (readonly) (НЕ ИЗМЕНЯЛАСЬ)
+
+// Показать окно с нумерацией строк (readonly)
 void EditorWindow::on_show_numbers_clicked() {
-    auto buf = m_textview.get_buffer();
-    if (!buf) { set_status("No buffer"); return; }
+    if (!m_tree.getRoot()) { set_status("Tree empty"); return; }
 
-    Glib::ustring all = buf->get_text();
-    // Разбиваем по '\n' и формируем нумерованный текст
-    auto plain = static_cast<std::string>(all);
     std::ostringstream numbered;
-    size_t lineno = 1;
-    size_t pos = 0;
-    
-    // Process text line by line
-    while (pos <= plain.size()) {
-        size_t next = plain.find('\n', pos);
-        if (next == std::string::npos) next = plain.size();
-        std::string line = plain.substr(pos, next - pos);
-        numbered << lineno << ": " << line << "\n";
-        lineno++;
-        
-        if (next == plain.size()) break; // End of string
-        pos = next + 1;
+    size_t total_lines = m_tree.getTotalLineCount();
+    for (size_t i = 0; i < total_lines; ++i) {
+        int start = m_tree.getOffsetForLine(static_cast<int>(i));
+        int end   = (i + 1 < total_lines) ? m_tree.getOffsetForLine(static_cast<int>(i) + 1)
+                                          : m_tree.getRoot()->getLength();
+        char* lineBuf = m_tree.getTextRange(start, end - start);
+        numbered << (i + 1) << ": " << std::string(lineBuf, end - start);
+        delete[] lineBuf; //NOSONAR
     }
-    
-    // Handle the case where the file is completely empty (0 lines)
-    if (plain.empty()) {
-        numbered << "1: \n"; 
-    }
-
 
     // Создаём модальное окно с read-only TextView
-    auto win = new Gtk::Window();//NOSONAR
+    auto win = new Gtk::Window(); //NOSONAR
     win->set_default_size(600, 400);
     win->set_modal(true);
-    // делаем окно транзиентным к основному 
     win->set_transient_for(*this);
     win->set_title("Numbered lines");
 
@@ -495,17 +488,10 @@ void EditorWindow::on_show_numbers_clicked() {
     tv->set_wrap_mode(Gtk::WrapMode::NONE);
     tv->get_style_context()->add_class("monospace"); 
     sc->set_child(*tv);
-
     win->set_child(*sc);
 
-    // Вставляем текст
-    auto tbuf = tv->get_buffer();
-    tbuf->set_text(numbered.str());
+    tv->get_buffer()->set_text(numbered.str());
 
-    // При закрытии окна — удалим его
-    win->signal_hide().connect([win]() {
-        delete win; //NOSONAR
-    });
-
+    win->signal_hide().connect([win]() { delete win; }); //NOSONAR
     win->present();
 }

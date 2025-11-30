@@ -1,5 +1,7 @@
 #include "Tree.h"
 #include <cstring>
+#include <stdexcept>
+#include <sstream>
 
 // ==========================================
 // Реализация LeafNode
@@ -8,7 +10,7 @@
 LeafNode::LeafNode(const char* str, int len) {
     this->length = len;
     this->data = new char[len]; // NOSONAR
-    this->lineCount = 0;
+    this->lineCount = 1;
     
     // Инициализируем всю выделенную память нулями, чтобы избежать чтения "мусора".
     if (len > 0) {
@@ -88,24 +90,19 @@ Tree::~Tree() {
 }
 
 // перемещающий конструктор
-LeafNode::LeafNode(LeafNode&& other) noexcept {
-    this->length = other.length;
-    this->lineCount = other.lineCount;
-    this->data = other.data;
-
-    other.length = 0;
-    other.lineCount = 0;
-    other.data = nullptr;
+LeafNode::LeafNode(LeafNode&& other) noexcept 
+    : length(0), lineCount(0), data(nullptr) {
+    *this = std::move(other);
 }
 
-// перемещающее присваивание
 LeafNode& LeafNode::operator=(LeafNode&& other) noexcept {
     if (this != &other) {
-        delete[] this->data; //NOSONAR освободить текущие данные (безопасно, может быть nullptr)
-        this->length = other.length;
-        this->lineCount = other.lineCount;
-        this->data = other.data;
-
+        delete[] data; //NOSONAR  // Очищаем текущие данные
+        
+        length = other.length;
+        lineCount = other.lineCount;
+        data = other.data;
+        
         other.length = 0;
         other.lineCount = 0;
         other.data = nullptr;
@@ -334,6 +331,51 @@ char* Tree::getLine(int lineNumber) {
 
     return result;
 }
+
+// Tree.cpp
+int Tree::getTotalLineCount() const {
+    if (!root) return 0;
+    return root->getLineCount();
+}
+
+static int getOffsetForLineRecursive(Node* node, int lineIndex) {
+    if (!node) throw std::out_of_range("Empty tree / line index out of range");
+
+    if (node->getType() == NodeType::NODE_LEAF) {
+        auto leaf = dynamic_cast<LeafNode*>(node);
+        if (!leaf) throw std::runtime_error("Bad cast to LeafNode");
+        // Проходим по байтам листа, считаем '\n'
+        int linesSeen = 0;
+        for (int i = 0; i < leaf->length; ++i) {
+            if (linesSeen == lineIndex) return i; // offset внутри листа
+            if (leaf->data[i] == '\n') ++linesSeen;
+        }
+        // если lineIndex == linesSeen (после последнего '\n'), offset = length
+        if (linesSeen == lineIndex) return leaf->length;
+        throw std::out_of_range("Line index out of range inside leaf");
+    } else {
+        auto in = dynamic_cast<InternalNode*>(node);
+        if (!in) throw std::runtime_error("Bad cast to InternalNode");
+        int leftLines = in->left ? in->left->getLineCount() : 0;
+        if (lineIndex < leftLines) {
+            return getOffsetForLineRecursive(in->left, lineIndex);
+        } else {
+            int leftLen = in->left ? in->left->getLength() : 0;
+            return leftLen + getOffsetForLineRecursive(in->right, lineIndex - leftLines);
+        }
+    }
+}
+
+int Tree::getOffsetForLine(int lineIndex0Based) const {
+    if (!root) throw std::out_of_range("Tree is empty");
+    if (lineIndex0Based < 0 || lineIndex0Based >= getTotalLineCount()) {
+        std::basic_ostringstream<char> oss;
+        oss << "Line index out of range (0.." << (getTotalLineCount()-1) << ")";
+        throw std::out_of_range(oss.str());
+    }
+    return getOffsetForLineRecursive(root, lineIndex0Based);
+}
+
 
 // Поиск листа по смещению (внутри Leaf — localOffset станет смещением в листе)
 LeafNode* Tree::findLeafByOffsetRecursive(Node* node, int& localOffset) {
@@ -630,4 +672,111 @@ void Tree::rebalanceRecursive(Node*& node) {
 
 void Tree::rebalance() {
     rebalanceRecursive(root);
+}
+
+
+void Tree::getTextRangeRecursive(Node* node, int& offset, int& len, char* out, int& outPos) const {
+    if (!node || len <= 0) return;
+
+    if (node->getType() == NodeType::NODE_LEAF) {
+        auto leaf = static_cast<LeafNode*>(node); // у тебя уже проверка через getType
+        if (offset >= leaf->length) {
+            offset -= leaf->length;
+            return;
+        }
+
+        int copyFrom = offset;
+        int toCopy = (len < leaf->length - copyFrom) ? len : (leaf->length - copyFrom);
+
+        std::memcpy(out + outPos, leaf->data + copyFrom, static_cast<size_t>(toCopy));
+
+        outPos += toCopy;
+        len -= toCopy;
+        offset = 0;
+        return;
+    } else {
+        auto in = static_cast<InternalNode*>(node);
+        if (in->left) getTextRangeRecursive(in->left, offset, len, out, outPos);
+        if (len > 0 && in->right) getTextRangeRecursive(in->right, offset, len, out, outPos);
+    }
+}
+
+char* Tree::getTextRange(int offset, int len) const {
+    if (!root || len <= 0) return nullptr;
+
+    int total = root->getLength();
+    if (offset < 0 || offset > total) throw std::out_of_range("Offset out of range");
+    if (offset + len > total) len = total - offset; // обрезка до конца
+
+    char* out = new char[len]; //NOSONAR
+    int outPos = 0;
+    int off = offset;
+    int l = len;
+    getTextRangeRecursive(root, off, l, out, outPos);
+    return out;
+}
+
+// --- вспомогательная функция: строим lps (longest prefix suffix) для KMP вручную ---
+void Tree::buildKMPTable(const char* pattern, int patternLen, int* lps) const {
+    int len = 0;
+    lps[0] = 0;
+    int i = 1;
+    while (i < patternLen) {
+        if (pattern[i] == pattern[len]) {
+            len++;
+            lps[i] = len;
+            i++;
+        } else {
+            if (len != 0) {
+                len = lps[len - 1];
+            } else {
+                lps[i] = 0;
+                i++;
+            }
+        }
+    }
+}
+
+// --- рекурсивный обход листов с поиском ---
+int Tree::findSubstringRecursive(Node* node, const char* pattern, int patternLen, const int* lps, int& j, int& processed) const {
+    if (!node) return -1;
+
+    if (node->getType() == NodeType::NODE_LEAF) {
+        auto leaf = dynamic_cast<LeafNode*>(node);
+        if (!leaf) return -1;
+
+        for (int i = 0; i < leaf->length; ++i) {
+            auto c = static_cast<unsigned char>(leaf->data[i]);
+            while (j > 0 && c != static_cast<unsigned char>(pattern[j])) j = lps[j - 1];
+            if (c == static_cast<unsigned char>(pattern[j])) j++;
+            if (j == patternLen) {
+                int matchEnd = processed + i;
+                int matchStart = matchEnd - patternLen + 1;
+                return matchStart; // байтовый offset
+            }
+        }
+        processed += leaf->length;
+        return -1;
+    } else {
+        auto in = dynamic_cast<InternalNode*>(node);
+        int r = -1;
+        if (in->left) { r = findSubstringRecursive(in->left, pattern, patternLen, lps, j, processed); if (r != -1) return r; }
+        if (in->right) { r = findSubstringRecursive(in->right, pattern, patternLen, lps, j, processed); if (r != -1) return r; }
+        return -1;
+    }
+}
+
+int Tree::findSubstring(const char* pattern, int patternLen) const {
+    if (!root || !pattern || patternLen <= 0) return -1;
+
+    auto lps = new int[patternLen]; //NOSONAR
+    buildKMPTable(pattern, patternLen, lps);
+
+    int j = 0;          // текущее состояние KMP
+    int processed = 0;  // глобальный offset по дереву
+
+    int result = findSubstringRecursive(root, pattern, patternLen, lps, j, processed);
+
+    delete[] lps; //NOSONAR
+    return result; // -1 если не найдено
 }

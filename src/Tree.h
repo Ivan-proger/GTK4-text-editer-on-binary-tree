@@ -91,6 +91,12 @@ private:
 
     Node* eraseRecursive(Node* node, int pos, int len);
 
+    void getTextRangeRecursive(Node* node, int& offset, int& len, char* out, int& outPos) const;
+
+    void buildKMPTable(const char* pattern, int patternLen, int* lps) const;
+
+    int findSubstringRecursive(Node* node, const char* pattern, int patternLen, const int* lps, int& j, int& processed) const;
+
     // Ребалансировка
     void rebalanceRecursive(Node*& node);
 
@@ -106,9 +112,19 @@ public:
     
     char* getLine(int lineNumber);
 
+    int getTotalLineCount() const;
+    int getOffsetForLine(int lineIndex0Based) const;
+
+    // возвращает новый буфер длиной len (или nullptr, если len==0).
+    // Владелец вызывающий код должен вызвать delete[]
+    char* getTextRange(int offset, int len) const;
+
+    int findSubstring(const char* pattern, int patternLen) const; // offset или -1
+
     void insert(int pos, const char* data, int len); // публичная обёртка
     void erase(int pos, int len);// публичная обёртка
     void rebalance();// публичный вызов ребаланса
+
 
     Node* getRoot() const;
     void setRoot(Node* newRoot);

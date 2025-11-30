@@ -600,14 +600,14 @@ void Tree::rebalanceRecursive(Node*& node) {
         if (combined <= MAX_LEAF_SIZE) {
             // собрать единый буфер
             auto merged = new char[combined];//NOSONAR
-            int p = 0;
+            int pos = 0;
             if (L->length > 0 && L->data) {
-                std::memcpy(merged + p, L->data, L->length);
-                p += L->length;
+                std::memcpy(merged + pos, L->data, L->length);
+                pos += L->length;
             }
             if (R->length > 0 && R->data) {
-                std::memcpy(merged + p, R->data, R->length);
-                p += R->length;
+                std::memcpy(merged + pos, R->data, R->length);
+                pos += R->length;
             }
             // удаляем старые объекты
             delete L;//NOSONAR

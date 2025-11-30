@@ -9,10 +9,11 @@
 // но определенная в .cpp для инкапсуляции.
 static size_t count_words(const std::string& s);
 
-class EditorWindow : public Gtk::ApplicationWindow {
+// глубокая иерархия унаследована от GTK
+class EditorWindow : public Gtk::ApplicationWindow { // NOSONAR cpp:S110
 public:
     EditorWindow();
-    virtual ~EditorWindow();
+    ~EditorWindow() override;
 
 protected:
     // Вспомогательные методы

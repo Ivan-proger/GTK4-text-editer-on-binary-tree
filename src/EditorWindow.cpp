@@ -172,7 +172,7 @@ void EditorWindow::on_textbuffer_changed() {
 
     // Получаем новый текст (UTF-8 bytes) как std::string
     Glib::ustring gtxt = buf->get_text();
-    std::string new_text = static_cast<std::string>(gtxt);
+    auto new_text = static_cast<std::string>(gtxt);
 
     // Если первый раз (m_last_text пуст) — инициализируем Tree
     if (m_last_text.empty() && m_tree.getRoot() == nullptr) {
@@ -197,8 +197,8 @@ void EditorWindow::on_textbuffer_changed() {
     }
 
     // Вычисляем минимальный префикс L
-    int old_len = static_cast<int>(m_last_text.size());
-    int new_len = static_cast<int>(new_text.size());
+    auto old_len = static_cast<int>(m_last_text.size());
+    auto new_len = static_cast<int>(new_text.size());
     int L = 0;
     int min_len = (old_len < new_len) ? old_len : new_len;
     while (L < min_len && m_last_text[L] == new_text[L]) ++L;
@@ -259,8 +259,8 @@ void EditorWindow::on_load_binary() {
         if (!bf.openFile(path.c_str())) { set_status("Cannot open binary: " + path); return; }
         Tree t;
         bf.loadTree(t);
-        char* txt = t.toText();
-        if (!txt) {
+        
+        if (char* txt = t.toText(); !txt) {
             m_textview.get_buffer()->set_text("");
             m_tree.clear();
             m_last_text.clear();
@@ -286,8 +286,12 @@ void EditorWindow::on_load_binary() {
         }
         bf.close();
         set_status("Loaded binary: " + path);
-    } catch (const std::exception& e) {
-        set_status(std::string("Error: ") + e.what());
+    } catch (const std::ios_base::failure& e) {
+        set_status(std::string("File I/O error: ") + e.what());
+    } catch (const std::invalid_argument& e) {
+        set_status(std::string("Invalid argument: ") + e.what());
+    } catch (const std::bad_alloc&) {  // Убрали параметр 'e' так как он не используется
+        set_status("Memory allocation failed");
     }
 }
 
@@ -301,8 +305,10 @@ void EditorWindow::on_save_binary() {
         bf.saveTree(m_tree);
         bf.close();
         set_status("Saved binary: " + path);
-    } catch (const std::exception& e) {
-        set_status(std::string("Error: ") + e.what());
+    } catch (const std::ios_base::failure& e) {
+        set_status(std::string("File I/O error: ") + e.what());
+    } catch (const std::bad_alloc&) {
+        set_status("Memory allocation failed");
     }
 }
 
@@ -321,8 +327,10 @@ void EditorWindow::on_load_text() {
         m_textview.get_buffer()->set_text(s);
         m_syncing = false;
         set_status("Loaded txt: " + path);
-    } catch (const std::exception& e) {
-        set_status(std::string("Error: ") + e.what());
+    } catch (const std::ios_base::failure& e) {
+        set_status(std::string("File I/O error: ") + e.what());
+    } catch (const std::bad_alloc&) {
+        set_status("Memory allocation failed");
     }
 }
 
@@ -335,14 +343,16 @@ void EditorWindow::on_save_text() {
         if (!out) { set_status("Err write txt: " + path); return; }
         out.write(text.data(), text.bytes());
         set_status("Saved txt: " + path);
-    } catch (const std::exception& e) {
-        set_status(std::string("Error: ") + e.what());
+    } catch (const std::ios_base::failure& e) {
+        set_status(std::string("File I/O error: ") + e.what());
+    } catch (const std::bad_alloc&) {
+        set_status("Memory allocation failed");
     }
 }
 
 // --- Поиск и навигация  ---
 void EditorWindow::on_search_activate() {
-    std::string query = static_cast<std::string>(m_search.get_text());
+    auto query = static_cast<std::string>(m_search.get_text());
     if (query.empty()) {
         set_status("Search: empty");
         return;
@@ -361,8 +371,10 @@ void EditorWindow::on_search_activate() {
             }
             // переводим в 0-based
             go_to_line_index(static_cast<int>(val - 1));
-        } catch (...) {
-            set_status("Invalid line number");
+        } catch (const std::invalid_argument&) {
+            set_status("Invalid line number format");
+        } catch (const std::out_of_range&) {
+            set_status("Line number is too large");
         }
         return;
     }
@@ -372,7 +384,7 @@ void EditorWindow::on_search_activate() {
     if (!buf) { set_status("No buffer"); return; }
 
     // Получаем весь текст как std::string (байты UTF-8)
-    std::string plain = static_cast<std::string>(buf->get_text());
+    auto plain = static_cast<std::string>(buf->get_text());
 
     // Находим первое вхождение (байтовый find)
     size_t pos = plain.find(query);
@@ -429,8 +441,10 @@ void EditorWindow::go_to_line_index(int lineIndex0Based) {
         } else {
             set_status("Line " + std::to_string(lineIndex0Based + 1) + " (no data in tree)");
         }
-    } catch (const std::exception& e) {
-        set_status(std::string("Tree error: ") + e.what());
+    } catch (const std::out_of_range& e) {
+        set_status(std::string("Line index out of range: ") + e.what());
+    } catch (const std::bad_alloc&) {
+        set_status("Memory allocation failed while getting line");
     }
 }
 

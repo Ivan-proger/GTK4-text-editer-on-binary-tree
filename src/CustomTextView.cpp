@@ -1,63 +1,59 @@
+// CustomTextView.cpp
 #include "CustomTextView.h"
 #include <gdk/gdk.h>
 #include <glib.h>
+#include <pango/pangocairo.h>
 #include <algorithm>
 #include <cstring>
+#include <iostream> // для простого логирования ошибок
+#include <cassert>
 
-// --- UTF-8 helpers -------------------------------------------------------
-// Возвращает индекс <= pos, являющийся началом UTF-8 символа (lead byte).
+// --- UTF-8 helpers-------------------------------
+// Возвращает индекс lead-byte, который лежит <= pos-1 (т.е. начало символа,
+// охватывающего байт pos-1), или 0 если не найдено. Без UB при pos == data_len.
 static size_t utf8_prev_boundary(const char* data, size_t data_len, size_t pos) {
+    if (data_len == 0) return 0;
     if (pos == 0) return 0;
     if (pos > data_len) pos = data_len;
-    size_t i = pos;
-    // если pos == data_len и последний байт continuation, шагнём назад
-    while (i > 0) {
-        unsigned char c = static_cast<unsigned char>(data[i]);
-        if ((c & 0xC0) != 0x80) { // not continuation (10xxxxxx)
-            // 'i' is a lead byte; but if pos points inside char, we want that lead
-            return i;
-        }
-        --i;
-    }
-    return 0;
+
+    // Начинаем с байта перед pos — это безопасно
+    size_t i = pos - 1;
+    // Если текущий байт continuation (10xxxxxx), сдвигаемся влево до lead-byte
+    while (i > 0 && (static_cast<unsigned char>(data[i]) & 0xC0) == 0x80) --i;
+    return i;
 }
 
-// Возвращает индекс >= pos, являющийся началом следующего/текущего UTF-8 символа.
-// Т.е. если pos в середине символа — вернёт позицию следующего lead-byte.
+// Возвращает позицию lead-byte для следующего символа (т.е. начало символа,
+// который начинается не раньше чем в pos). Если pos уже указывает на lead-byte,
+// вернёт pos. Если pos >= data_len — вернёт data_len.
 static size_t utf8_next_boundary(const char* data, size_t data_len, size_t pos) {
+    if (data_len == 0) return 0;
     if (pos >= data_len) return data_len;
     size_t i = pos;
-    while (i < data_len) {
-        unsigned char c = static_cast<unsigned char>(data[i]);
-        if ((c & 0xC0) != 0x80) return i;
-        ++i;
-    }
-    return data_len;
+    // Если pos указывает внутри continuation байтов, продвигаемся вправо
+    while (i < data_len && (static_cast<unsigned char>(data[i]) & 0xC0) == 0x80) ++i;
+    return i;
 }
 
 
-// === ctor/dtor ===
+// === ctor/dtor =============================================================
 CustomTextView::CustomTextView() {
     m_font_desc.set_family("Monospace");
     m_font_desc.set_size(10 * PANGO_SCALE);
 
-    // сделать виджет фокусируемым (можно и в EditorWindow, но лучше здесь — локально)
     set_focusable(true);
 
-    // draw func (gtkmm4)
     set_draw_func([this](const Cairo::RefPtr<Cairo::Context>& cr, int width, int height){
         draw_with_cairo(cr, width, height);
     });
 
     // Key controller
     auto key_controller = Gtk::EventControllerKey::create();
-    // ---------- ВНИМАНИЕ: добавляем ", false" чтобы соответствовать signature connect(slot, after)
     key_controller->signal_key_pressed().connect(sigc::mem_fun(*this, &CustomTextView::on_key_pressed), false);
     add_controller(key_controller);
 
     // Click gestures for mouse press
     auto click = Gtk::GestureClick::create();
-    // signal_pressed returns void(int, double, double) so connect similarly
     click->signal_pressed().connect(sigc::mem_fun(*this, &CustomTextView::on_gesture_pressed), false);
     add_controller(click);
 
@@ -68,7 +64,6 @@ CustomTextView::CustomTextView() {
 
     // Scroll controller (optional)
     auto scroll = Gtk::EventControllerScroll::create();
-    // signal_scroll has signature bool(double, double) — connect needs the "after" arg too
     scroll->signal_scroll().connect(sigc::mem_fun(*this, &CustomTextView::on_scroll), false);
     add_controller(scroll);
 
@@ -78,14 +73,14 @@ CustomTextView::CustomTextView() {
         queue_draw();
         return true;
     }, 500);
-
 }
 
 CustomTextView::~CustomTextView() {
     if (m_caret_timer.connected()) m_caret_timer.disconnect();
 }
 
-// === public API ===
+
+// === public API ============================================================
 void CustomTextView::set_tree(Tree* tree) {
     m_tree = tree;
     m_dirty = true;
@@ -103,7 +98,6 @@ void CustomTextView::reload_from_tree() {
     if (m_tree->getRoot()) {
         char* raw = m_tree->toText();
         if (raw) {
-            // используем ::strlen (и подключили <cstring>)
             m_textCache.assign(raw, static_cast<size_t>(::strlen(raw)));
             delete[] raw;
         } else {
@@ -143,7 +137,8 @@ int CustomTextView::get_cursor_line_index() const {
     return std::max(0, hi);
 }
 
-// === controllers handlers ===
+
+// === controllers handlers ================================================
 bool CustomTextView::on_key_pressed(guint keyval, guint /*keycode*/, Gdk::ModifierType /*state*/) {
     if (!m_tree) return false;
 
@@ -155,10 +150,11 @@ bool CustomTextView::on_key_pressed(guint keyval, guint /*keycode*/, Gdk::Modifi
             int l = m_sel_len;
             try {
                 if (m_tree) m_tree->erase(s, l);
-            } catch(...) {}
+            } catch (const std::exception& e) {
+                std::cerr << "Tree::erase error: " << e.what() << '\n';
+            }
             clear_selection();
             reload_from_tree();
-            // установить курсор в начало удалённого диапазона (s)
             set_cursor_byte_offset(s);
             return true;
         }
@@ -171,37 +167,49 @@ bool CustomTextView::on_key_pressed(guint keyval, guint /*keycode*/, Gdk::Modifi
             int prevOff = static_cast<int>(prevPtr - start);
             int len = m_cursor_byte_offset - prevOff;
             if (len > 0) {
-                try { if (m_tree) m_tree->erase(prevOff, len); } catch(...) {}
+                try {
+                    if (m_tree) m_tree->erase(prevOff, len);
+                } catch (const std::exception& e) {
+                    std::cerr << "Tree::erase error: " << e.what() << '\n';
+                }
                 reload_from_tree();
                 set_cursor_byte_offset(prevOff);
             }
         }
         return true;
-        } else if (keyval == GDK_KEY_Delete) {
-            if (m_sel_start >= 0 && m_sel_len > 0) {
-                int s = m_sel_start;
-                int l = m_sel_len;
-                try { if (m_tree) m_tree->erase(s, l); } catch(...) {}
-                clear_selection();
-                reload_from_tree();
-                set_cursor_byte_offset(s);
-                return true;
+    } else if (keyval == GDK_KEY_Delete) {
+        if (m_sel_start >= 0 && m_sel_len > 0) {
+            int s = m_sel_start;
+            int l = m_sel_len;
+            try {
+                if (m_tree) m_tree->erase(s, l);
+            } catch (const std::exception& e) {
+                std::cerr << "Tree::erase error: " << e.what() << '\n';
             }
-            // иначе обычный Delete - удалить следующий символ
-            if (m_cursor_byte_offset < static_cast<int>(m_textCache.size())) {
-                const char* start = m_textCache.c_str();
-                const char* curPtr = start + m_cursor_byte_offset;
-                const char* nextPtr = g_utf8_next_char(curPtr);
-                int nextOff = static_cast<int>(nextPtr - start);
-                int len = nextOff - m_cursor_byte_offset;
-                if (len > 0) {
-                    try { if (m_tree) m_tree->erase(m_cursor_byte_offset, len); } catch(...) {}
-                    reload_from_tree();
-                    set_cursor_byte_offset(m_cursor_byte_offset);
-                }
-            }
+            clear_selection();
+            reload_from_tree();
+            set_cursor_byte_offset(s);
             return true;
-        } else if (keyval == GDK_KEY_Left) {
+        }
+        // иначе обычный Delete - удалить следующий символ
+        if (m_cursor_byte_offset < static_cast<int>(m_textCache.size())) {
+            const char* start = m_textCache.c_str();
+            const char* curPtr = start + m_cursor_byte_offset;
+            const char* nextPtr = g_utf8_next_char(curPtr);
+            int nextOff = static_cast<int>(nextPtr - start);
+            int len = nextOff - m_cursor_byte_offset;
+            if (len > 0) {
+                try {
+                    if (m_tree) m_tree->erase(m_cursor_byte_offset, len);
+                } catch (const std::exception& e) {
+                    std::cerr << "Tree::erase error: " << e.what() << '\n';
+                }
+                reload_from_tree();
+                set_cursor_byte_offset(m_cursor_byte_offset);
+            }
+        }
+        return true;
+    } else if (keyval == GDK_KEY_Left) {
         if (m_cursor_byte_offset > 0) {
             const char* start = m_textCache.c_str();
             const char* curPtr = start + m_cursor_byte_offset;
@@ -221,7 +229,11 @@ bool CustomTextView::on_key_pressed(guint keyval, guint /*keycode*/, Gdk::Modifi
         return true;
     } else if (keyval == GDK_KEY_Return || keyval == GDK_KEY_KP_Enter) {
         const char ch = '\n';
-        try { m_tree->insert(m_cursor_byte_offset, &ch, 1); } catch(...) {}
+        try {
+            m_tree->insert(m_cursor_byte_offset, &ch, 1);
+        } catch (const std::exception& e) {
+            std::cerr << "Tree::insert error: " << e.what() << '\n';
+        }
         reload_from_tree();
         set_cursor_byte_offset(m_cursor_byte_offset + 1);
         return true;
@@ -232,7 +244,11 @@ bool CustomTextView::on_key_pressed(guint keyval, guint /*keycode*/, Gdk::Modifi
     if (uc != 0) {
         char buf[6] = {0};
         int bytes = g_unichar_to_utf8(uc, buf);
-        try { m_tree->insert(m_cursor_byte_offset, buf, bytes); } catch(...) {}
+        try {
+            m_tree->insert(m_cursor_byte_offset, buf, bytes);
+        } catch (const std::exception& e) {
+            std::cerr << "Tree::insert error: " << e.what() << '\n';
+        }
         reload_from_tree();
         set_cursor_byte_offset(m_cursor_byte_offset + bytes);
         return true;
@@ -242,11 +258,15 @@ bool CustomTextView::on_key_pressed(guint keyval, guint /*keycode*/, Gdk::Modifi
 }
 
 void CustomTextView::on_gesture_pressed(int /*n_press*/, double x, double y) {
-    // захват фокуса при клике — обязательно, чтобы EventControllerKey начал получать события
     clear_selection();
     grab_focus();
 
-    // compute clicked line and position using x,y
+    if (m_dirty) ensure_text_cache();
+    if (m_lineOffsets.empty()) {
+        set_cursor_byte_offset(0);
+        return;
+    }
+
     const int left_margin = 6;
     const int top_margin = 4;
 
@@ -255,7 +275,11 @@ void CustomTextView::on_gesture_pressed(int /*n_press*/, double x, double y) {
 
     auto lineIndex = static_cast<int>((y - top_margin) / (m_line_height > 0 ? m_line_height : 1));
     if (lineIndex < 0) lineIndex = 0;
-    if (lineIndex >= static_cast<int>(m_lineOffsets.size())) lineIndex = static_cast<int>(m_lineOffsets.size()) - 1;
+    if (m_lineOffsets.empty()) {
+        lineIndex = 0;
+    } else if (lineIndex >= static_cast<int>(m_lineOffsets.size())) {
+        lineIndex = static_cast<int>(m_lineOffsets.size()) - 1;
+    }
 
     int lineStart = m_lineOffsets[lineIndex];
     int lineEnd = (lineIndex + 1 < static_cast<int>(m_lineOffsets.size())) ? m_lineOffsets[lineIndex + 1] - 1 : static_cast<int>(m_textCache.size());
@@ -263,20 +287,41 @@ void CustomTextView::on_gesture_pressed(int /*n_press*/, double x, double y) {
     if (lineEnd > lineStart) lineStr.assign(m_textCache.data() + lineStart, lineEnd - lineStart);
     else lineStr.clear();
 
-    // linear scan by UTF-8 chars to find approximate position
-    const char* p = lineStr.c_str();
-    const char* endp = p + lineStr.size();
-    const char* it = p;
-    int chosenPrefix = 0;
-    while (it < endp) {
-        const char* next = g_utf8_next_char(it);
-        auto prefixLen = static_cast<int>(next - p);
-        int px = measure_prefix_pixels_in_line(lineStr, prefixLen);
-        if (px > clickX) break;
-        chosenPrefix = prefixLen;
-        it = next;
+    // Если строка пустая — просто поставим курсор в lineStart
+    if (lineStr.empty()) {
+        set_cursor_byte_offset(lineStart);
+        return;
     }
-    int newOffset = lineStart + chosenPrefix;
+
+    // Безопасный путь: не используем Pango при обработке клика (это горячий код событий),
+    // а применяем моноширинную аппроксимацию, основанную на m_char_width.
+    // Это устраняет падения, связанные с Pango в edge-case'ах.
+    //
+    // Вычислим примерное число символов до положения клика:
+    int approx_chars = clickX / (m_char_width > 0 ? m_char_width : 8);
+    if (approx_chars < 0) approx_chars = 0;
+
+    // Пройдём по UTF-8 символам и найдем байтовую позицию, соответствующую approx_chars.
+    size_t bpos = 0;
+    int chars = 0;
+    while (bpos < lineStr.size() && chars < approx_chars) {
+        bpos = utf8_next_boundary(lineStr.c_str(), lineStr.size(), bpos);
+        ++chars;
+    }
+
+    // Точный добор: локально пройдём символы вправо, отслеживая фактическую X позицию
+    // на основе m_char_width (позволяет скорректировать в небольших пределах)
+    size_t chosenPrefix = bpos;
+    int cur_x = chars * (m_char_width > 0 ? m_char_width : 8);
+    while (chosenPrefix < lineStr.size()) {
+        size_t nextPref = utf8_next_boundary(lineStr.c_str(), lineStr.size(), chosenPrefix);
+        if (nextPref == chosenPrefix) break; // safety
+        cur_x += (m_char_width > 0 ? m_char_width : 8);
+        if (cur_x > clickX) break;
+        chosenPrefix = nextPref;
+    }
+
+    int newOffset = lineStart + static_cast<int>(chosenPrefix);
     set_cursor_byte_offset(newOffset);
 }
 
@@ -289,7 +334,8 @@ bool CustomTextView::on_scroll(double /*dx*/, double /*dy*/) {
     return false;
 }
 
-// === drawing / cache ===
+
+// === drawing / cache ======================================================
 void CustomTextView::ensure_text_cache() {
     m_lineOffsets.clear();
     const char* s = m_textCache.c_str();
@@ -308,9 +354,10 @@ void CustomTextView::ensure_text_cache() {
 void CustomTextView::recompute_metrics() {
     auto layout = create_pango_layout("X");
     layout->set_font_description(m_font_desc);
-    int w, h;
+    int w = 0, h = 0;
     layout->get_pixel_size(w, h);
     m_line_height = h > 0 ? h : 16;
+
     layout->set_text("M");
     layout->get_pixel_size(w, h);
     m_char_width = w > 0 ? w : 8;
@@ -325,33 +372,45 @@ void CustomTextView::update_size_request() {
 
 int CustomTextView::measure_prefix_pixels_in_line(const std::string& line, size_t bytePrefixLen) {
     if (bytePrefixLen > line.size()) bytePrefixLen = line.size();
-    std::string tmp = line.substr(0, bytePrefixLen);
-    auto layout = create_pango_layout(tmp);
+
+    // Если виджет ещё не реализован/не готов — используем безопасный моноширинный fallback.
+    // Это исключит обращения в Pango, которые в некоторых edge-case'ах могут падать.
+    if (!get_realized()) {
+        // посчитаем число юникод-символов (лидеров UTF-8) в префиксе
+        int chars = 0;
+        for (size_t i = 0; i < bytePrefixLen; ++i) {
+            unsigned char c = static_cast<unsigned char>(line[i]);
+            if ((c & 0xC0) != 0x80) ++chars;
+        }
+        return chars * m_char_width;
+    }
+
+    // Если виджет реализован — используем Pango для точного измерения.
+    auto layout = create_pango_layout(line);
     layout->set_font_description(m_font_desc);
-    int w, h;
-    layout->get_pixel_size(w, h);
-    return w;
+
+    PangoRectangle strong_pos;
+    pango_layout_get_cursor_pos(layout->gobj(), static_cast<int>(bytePrefixLen), &strong_pos, nullptr);
+    return strong_pos.x / PANGO_SCALE;
 }
+
 
 
 void CustomTextView::draw_with_cairo(const Cairo::RefPtr<Cairo::Context>& cr, int /*width*/, int /*height*/) {
     if (m_dirty) ensure_text_cache();
 
+    // background
     try {
         Gdk::RGBA bg;
         auto ctx = get_style_context();
-        // попытка
         bg.set("background");
-        ctx->add_class("background"); // может не быть
+        ctx->add_class("background");
         cr->set_source_rgba(bg.get_red(), bg.get_green(), bg.get_blue(), bg.get_alpha());
-        // если нет — остаёмся с белым
-        //cr->set_source_rgb(1.0, 1.0, 1.0);
         cr->paint();
     } catch(...) {
         cr->set_source_rgb(1.0, 1.0, 1.0);
         cr->paint();
     }
-
 
     const int left_margin = 6;
     const int top_margin = 4;
@@ -366,13 +425,12 @@ void CustomTextView::draw_with_cairo(const Cairo::RefPtr<Cairo::Context>& cr, in
         // текст линии в байтах
         std::string line_tmp(m_textCache.data() + start, static_cast<size_t>(len));
 
-        // --- selection drawing for this line (как у тебя было) ---
+        // --- selection drawing for this line ---
         bool has_selection_this_line = false;
         int sel_L = 0, sel_R = 0; // в байтах относительно начала строки
         if (m_sel_start >= 0 && m_sel_len > 0) {
             int sel_beg = m_sel_start;
             int sel_end = m_sel_start + m_sel_len; // exclusive
-            // intersection with this line [start, end)
             int L = std::max(start, sel_beg);
             int R = std::min(end, sel_end);
             if (R > L) {
@@ -386,7 +444,6 @@ void CustomTextView::draw_with_cairo(const Cairo::RefPtr<Cairo::Context>& cr, in
                 int y = top_margin + static_cast<int>(i) * m_line_height;
                 double sel_a = 0.35; // прозрачность
 
-                // fallback: light blue
                 Gdk::RGBA sel_color;
                 sel_color.set_red(0.15);
                 sel_color.set_green(0.45);
@@ -401,65 +458,59 @@ void CustomTextView::draw_with_cairo(const Cairo::RefPtr<Cairo::Context>& cr, in
             }
         }
 
-        // --- DRAW TEXT: возможна сегментация на части для контраста в выделении ---
-        // Если выделение пересекает часть строки, рисуем три фрагмента: before, selected, after.
-        // В простом случае рисуем всю строку одним цветом.
-        auto layout = create_pango_layout(""); // создадим layout, будем менять текст
+        // --- DRAW TEXT: используем один Pango::Layout на строку ---
+        auto layout = create_pango_layout(line_tmp);
         layout->set_font_description(m_font_desc);
 
-        // helper: функция для рисования фрагмента строки с указанным смещением цвета
-        auto draw_fragment = [&](size_t frag_start, size_t frag_len, const Gdk::RGBA& color) {
-            if (frag_len == 0) return;
-            if (frag_start >= line_tmp.size()) return;
-            if (frag_start + frag_len > line_tmp.size()) frag_len = line_tmp.size() - frag_start;
-
-            std::string frag(line_tmp.data() + frag_start, frag_len);
-            layout->set_text(frag);
-
-            // Смещение X от начала строки до начала фрагмента
-            int offset_x = left_margin + measure_prefix_pixels_in_line(line_tmp, frag_start);
-            int y = top_margin + static_cast<int>(i) * m_line_height;
-
-            cr->save();
-            cr->translate(offset_x, y);
-            cr->set_source_rgba(color.get_red(), color.get_green(), color.get_blue(), color.get_alpha());
-            pango_cairo_show_layout(cr->cobj(), layout->gobj());
-            cr->restore();
-        };
-
-
-        // Цвет текста по умолчанию (попытайся взять из темы, иначе чёрный)
+        // Цвет текста по умолчанию (попытаемся взять из темы, иначе чёрный)
         Gdk::RGBA fg_color;
         try {
             auto ctx = get_style_context();
-            // STATE_FLAG_NORMAL — обычное состояние (не фокус, не активное)
             fg_color = ctx->get_color();
         } catch(...) {
-            // fallback на черный, если что-то пошло не так
             fg_color.set_red(0.0);
             fg_color.set_green(0.0);
             fg_color.set_blue(0.0);
             fg_color.set_alpha(1.0);
         }
 
-
-        // Цвет текста внутри выделения (контрастный) — белый
         Gdk::RGBA sel_fg;
         sel_fg.set_red(1.0);
         sel_fg.set_green(1.0);
         sel_fg.set_blue(1.0);
         sel_fg.set_alpha(1.0);
 
+        // helper: рисует фрагмент строки, зная его байтовую позицию внутри строки
+        auto draw_fragment_by_bytes = [&](size_t frag_start, size_t frag_len, const Gdk::RGBA& color) {
+            if (frag_len == 0) return;
+            if (frag_start >= line_tmp.size()) return;
+            if (frag_start + frag_len > line_tmp.size()) frag_len = line_tmp.size() - frag_start;
+
+            // pango_layout_get_substring нет в C API, поэтому используем set_text на временном layout.
+            std::string frag(line_tmp.data() + frag_start, frag_len);
+            auto frag_layout = create_pango_layout(frag);
+            frag_layout->set_font_description(m_font_desc);
+
+            int offset_x = left_margin + measure_prefix_pixels_in_line(line_tmp, frag_start);
+            int y = top_margin + static_cast<int>(i) * m_line_height;
+
+            cr->save();
+            cr->translate(offset_x, y);
+            cr->set_source_rgba(color.get_red(), color.get_green(), color.get_blue(), color.get_alpha());
+            pango_cairo_show_layout(cr->cobj(), frag_layout->gobj());
+            cr->restore();
+        };
+
         if (!has_selection_this_line) {
             // просто весь текст
-            draw_fragment(0, line_tmp.size(), fg_color);
+            draw_fragment_by_bytes(0, line_tmp.size(), fg_color);
         } else {
             // before
-            draw_fragment(0, static_cast<size_t>(sel_L), fg_color);
+            draw_fragment_by_bytes(0, static_cast<size_t>(sel_L), fg_color);
             // selected
-            draw_fragment(static_cast<size_t>(sel_L), static_cast<size_t>(sel_R - sel_L), sel_fg);
+            draw_fragment_by_bytes(static_cast<size_t>(sel_L), static_cast<size_t>(sel_R - sel_L), sel_fg);
             // after
-            draw_fragment(static_cast<size_t>(sel_R), (line_tmp.size() - sel_R), fg_color);
+            draw_fragment_by_bytes(static_cast<size_t>(sel_R), (line_tmp.size() - sel_R), fg_color);
         }
     } // конец цикла по строкам
 
@@ -470,7 +521,11 @@ void CustomTextView::draw_with_cairo(const Cairo::RefPtr<Cairo::Context>& cr, in
         if (byteOffset > static_cast<int>(m_textCache.size())) byteOffset = static_cast<int>(m_textCache.size());
         int lineIndex = static_cast<int>(std::upper_bound(m_lineOffsets.begin(), m_lineOffsets.end(), byteOffset) - m_lineOffsets.begin() - 1);
         if (lineIndex < 0) lineIndex = 0;
-        if (lineIndex >= static_cast<int>(m_lineOffsets.size())) lineIndex = static_cast<int>(m_lineOffsets.size()) - 1;
+        if (m_lineOffsets.empty()) {
+            lineIndex = 0;
+        } else if (lineIndex >= static_cast<int>(m_lineOffsets.size())) {
+            lineIndex = static_cast<int>(m_lineOffsets.size()) - 1;
+        }
         int lineStart = m_lineOffsets[lineIndex];
         int prefixLen = byteOffset - lineStart;
         if (prefixLen < 0) prefixLen = 0;
@@ -489,6 +544,7 @@ void CustomTextView::draw_with_cairo(const Cairo::RefPtr<Cairo::Context>& cr, in
 }
 
 
+// === selection / misc =====================================================
 void CustomTextView::select_range_bytes(int startByte, int lengthBytes) {
     if (startByte < 0) startByte = 0;
     int maxb = static_cast<int>(m_textCache.size());
@@ -501,23 +557,18 @@ void CustomTextView::select_range_bytes(int startByte, int lengthBytes) {
         return;
     }
 
-    // clamp end
     int endByte = startByte + lengthBytes;
     if (endByte > maxb) endByte = maxb;
 
-    // нормализуем к UTF-8 границам внутри соответствующей строки-хранителя (m_textCache)
     const char* data = m_textCache.data();
     size_t data_len = static_cast<size_t>(maxb);
 
     size_t sb = static_cast<size_t>(startByte);
     size_t eb = static_cast<size_t>(endByte);
 
-    // подвинем начало влево до lead-byte (если оно в середине)
     size_t safe_sb = utf8_prev_boundary(data, data_len, sb);
-    // сдвинем конец вправо до начала следующего символа (после последнего байта)
     size_t safe_eb = utf8_next_boundary(data, data_len, eb);
 
-    // если получилось пусто — считаем как no-selection
     if (safe_eb <= safe_sb) {
         m_sel_start = -1;
         m_sel_len = 0;
@@ -528,7 +579,6 @@ void CustomTextView::select_range_bytes(int startByte, int lengthBytes) {
     queue_draw();
 }
 
-
 void CustomTextView::clear_selection() {
     m_sel_start = -1;
     m_sel_len = 0;
@@ -536,6 +586,11 @@ void CustomTextView::clear_selection() {
 }
 
 void CustomTextView::scroll_to_byte_offset(int byteOffset) {
+    if (m_dirty) ensure_text_cache();
+    if (m_lineOffsets.empty()) {
+        // ничего не делаем, т.к. нет данных для скролла
+        return;
+    }
     if (byteOffset < 0) byteOffset = 0;
     if (byteOffset > static_cast<int>(m_textCache.size())) byteOffset = static_cast<int>(m_textCache.size());
 
@@ -548,25 +603,18 @@ void CustomTextView::scroll_to_byte_offset(int byteOffset) {
 
     int y = lineIndex * m_line_height;
 
-    // Идем вверх по дереву родителей, ищем Gtk::ScrolledWindow и Gtk::Window (топ-левел)
     Gtk::Widget* w = this;
     Gtk::ScrolledWindow* found_sw = nullptr;
     Gtk::Window* found_win = nullptr;
 
     while (w) {
-        // родитель виджета
         auto parent = w->get_parent();
         if (!parent) {
-            // возможно w сам и есть top-level window
             found_win = dynamic_cast<Gtk::Window*>(w);
             break;
         }
-
-        // если родитель — ScrolledWindow, запомним его
         found_sw = dynamic_cast<Gtk::ScrolledWindow*>(parent);
         if (found_sw) {
-            // можем дальше продолжать подниматься, но хватит — у нас есть scrolledwindow
-            // также попробуем найти окно выше него
             Gtk::Widget* up = parent;
             while (up) {
                 auto pup = up->get_parent();
@@ -575,12 +623,9 @@ void CustomTextView::scroll_to_byte_offset(int byteOffset) {
             }
             break;
         }
-
-        // идём вверх
         w = parent;
     }
 
-    // Если нашли scrolledwindow — устанавливем vadjustment
     if (found_sw) {
         if (auto vadj = found_sw->get_vadjustment()) {
             int maxv = static_cast<int>(vadj->get_upper() - vadj->get_page_size());
@@ -591,12 +636,8 @@ void CustomTextView::scroll_to_byte_offset(int byteOffset) {
         return;
     }
 
-    // Если scrolledwindow не найден, но нашли окно, попробуем установить позицию через окно (менее точный путь)
     if (found_win) {
-        // ничего специального делать — нельзя напрямую скроллить окно; просто ничего делать
         return;
     }
-
-    // Ничего не найдено — просто ничего не делаем
+    // Ничего не найдено — молча выходим
 }
-

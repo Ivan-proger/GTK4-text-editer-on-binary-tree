@@ -40,6 +40,8 @@ protected:
     // draw
     void draw_with_cairo(const Cairo::RefPtr<Cairo::Context>& cr, int width, int height);
 
+    void on_gesture_released(int /*n_press*/, double /*x*/, double /*y*/);
+
 private:
     void ensure_text_cache();
     void recompute_metrics();
@@ -61,6 +63,12 @@ private:
 
     int m_sel_start = -1; // -1 => нет выделения
     int m_sel_len = 0;
+
+    // в private:
+    bool m_mouse_selecting = false;   // true — идёт drag-selection
+    int m_sel_anchor = -1;            // байтовый оффсет начала выделения (якорь)
+    int m_desired_column_px = -1;     // предпочитаемая горизонтальная позиция (px) для Up/Down
+
 
     bool m_dirty{true};
 };

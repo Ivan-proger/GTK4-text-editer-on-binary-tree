@@ -55,7 +55,13 @@ CustomTextView::CustomTextView() {
     // Click gestures for mouse press
     auto click = Gtk::GestureClick::create();
     click->signal_pressed().connect(sigc::mem_fun(*this, &CustomTextView::on_gesture_pressed), false);
+    click->signal_released().connect(sigc::mem_fun(*this, &CustomTextView::on_gesture_released), false);
     add_controller(click);
+
+    // ensure flags initial state
+    m_mouse_selecting = false;
+    m_sel_anchor = -1;
+    m_desired_column_px = -1;
 
     // Motion controller
     auto motion = Gtk::EventControllerMotion::create();
@@ -257,6 +263,21 @@ bool CustomTextView::on_key_pressed(guint keyval, guint /*keycode*/, Gdk::Modifi
     return false; // unhandled -> allow propagation
 }
 
+void CustomTextView::on_gesture_released(int /*n_press*/, double /*x*/, double /*y*/) {
+    // Завершаем drag-selection
+    if (!m_mouse_selecting) return;
+    m_mouse_selecting = false;
+
+    // Если ничего не выделено — сбросили якорь
+    if (m_sel_start < 0 || m_sel_len == 0) {
+        m_sel_anchor = -1;
+    } else {
+        // оставляем текущее выделение и курсор в его конце
+        set_cursor_byte_offset(m_sel_start + m_sel_len);
+    }
+}
+
+
 void CustomTextView::on_gesture_pressed(int /*n_press*/, double x, double y) {
     clear_selection();
     grab_focus();
@@ -322,12 +343,77 @@ void CustomTextView::on_gesture_pressed(int /*n_press*/, double x, double y) {
     }
 
     int newOffset = lineStart + static_cast<int>(chosenPrefix);
+
+    // Начинаем выделение (drag) при удержании кнопки мыши
+    m_mouse_selecting = true;
+    m_sel_anchor = newOffset;
+    // Стартовое выделение отсутствует (нулевая длина)
+    select_range_bytes(newOffset, 0);
     set_cursor_byte_offset(newOffset);
 }
 
-void CustomTextView::on_motion(double /*x*/, double /*y*/) {
-    // not used for now
+void CustomTextView::on_motion(double x, double y) {
+    // если не в режиме выделения — ничего не делаем
+    if (!m_mouse_selecting) return;
+
+    if (m_dirty) ensure_text_cache();
+    if (m_lineOffsets.empty()) return;
+
+    const int left_margin = 6;
+    const int top_margin = 4;
+
+    int clickX = static_cast<int>(x) - left_margin;
+    if (clickX < 0) clickX = 0;
+
+    int lineIndex = static_cast<int>((y - top_margin) / (m_line_height > 0 ? m_line_height : 1));
+    if (lineIndex < 0) lineIndex = 0;
+    if (lineIndex >= static_cast<int>(m_lineOffsets.size())) lineIndex = static_cast<int>(m_lineOffsets.size()) - 1;
+
+    int lineStart = m_lineOffsets[lineIndex];
+    int lineEnd = (lineIndex + 1 < static_cast<int>(m_lineOffsets.size())) ? m_lineOffsets[lineIndex + 1] - 1 : static_cast<int>(m_textCache.size());
+    std::string lineStr;
+    if (lineEnd > lineStart) lineStr.assign(m_textCache.data() + lineStart, lineEnd - lineStart);
+    else lineStr.clear();
+
+    // вычисляем байтовый оффсет в строке при позиции clickX
+    size_t chosenPrefix = 0;
+    if (lineStr.empty()) {
+        chosenPrefix = 0;
+    } else {
+        int approx_chars = clickX / (m_char_width > 0 ? m_char_width : 8);
+        if (approx_chars < 0) approx_chars = 0;
+
+        size_t bpos = 0;
+        int chars = 0;
+        while (bpos < lineStr.size() && chars < approx_chars) {
+            bpos = utf8_next_boundary(lineStr.c_str(), lineStr.size(), bpos);
+            ++chars;
+        }
+        chosenPrefix = bpos;
+        int cur_x = chars * (m_char_width > 0 ? m_char_width : 8);
+        while (chosenPrefix < lineStr.size()) {
+            size_t nextPref = utf8_next_boundary(lineStr.c_str(), lineStr.size(), chosenPrefix);
+            if (nextPref == chosenPrefix) break;
+            cur_x += (m_char_width > 0 ? m_char_width : 8);
+            if (cur_x > clickX) break;
+            chosenPrefix = nextPref;
+        }
+    }
+
+    int currentOffset = lineStart + static_cast<int>(chosenPrefix);
+
+    // Обновляем выделение между якорем и текущей позицией
+    if (m_sel_anchor < 0) {
+        m_sel_anchor = currentOffset; // safety
+    }
+    int selBeg = std::min(m_sel_anchor, currentOffset);
+    int selEnd = std::max(m_sel_anchor, currentOffset);
+    select_range_bytes(selBeg, selEnd - selBeg);
+
+    // не ставим курсор в середину выделения — курсор в конце выделения
+    set_cursor_byte_offset(currentOffset);
 }
+
 
 bool CustomTextView::on_scroll(double /*dx*/, double /*dy*/) {
     // not intercepted

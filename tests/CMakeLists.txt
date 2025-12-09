@@ -17,3 +17,14 @@ target_link_libraries(test2 PRIVATE tree_lib)
 # регистрируем тест в CTest
 add_test(NAME tree_test2 COMMAND test2)
 set_tests_properties(tree_test2 PROPERTIES TIMEOUT 10)
+
+# соберём тест, используя библиотеку tree_lib
+add_executable(gen_file gen_file.cpp)
+
+target_include_directories(gen_file PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(gen_file PRIVATE tree_lib)
+
+# добавим тест в CTest
+add_test(NAME gen_file COMMAND test1)
+set_tests_properties(gen_file PROPERTIES TIMEOUT 10)
+

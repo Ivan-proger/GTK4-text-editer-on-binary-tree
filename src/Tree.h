@@ -11,27 +11,26 @@ enum class NodeType : char {
 };
 
 struct Node {
-    // Оставляем getType, как ты просил
     virtual NodeType getType() const = 0;
-    
-    // Новые виртуальные методы для быстрого доступа к статистике
-    virtual int getLength() const = 0;     // Вес в байтах
-    virtual int getLineCount() const = 0;  // Вес в строках (\n)
-    
+
+    // Быстрый доступ к статистике
+    virtual int getLength() const = 0; // Вес в байтах
+    virtual int getLineCount() const = 0; // Вес в строках (\n)
+
     virtual ~Node() = default;
 };
 
 struct LeafNode : public Node {
     int length;
     int lineCount; // Количество строк-1 (\n)
-    char* data;
+    char* data; // Указатель на строку в памяти (кучи)
 
     LeafNode(const char* str, int len);
     ~LeafNode() override;
 
-     // запрет копирования
+    // Запрет копирования (от утечек)
     LeafNode(const LeafNode&) = delete; 
-     // запрет присваивания копированием
+    // Запрет присваивания копированием (от утечек)
     LeafNode& operator=(const LeafNode&) = delete;
 
     // Реализуем перемещающий конструктор и перемещающее присваивание:
@@ -47,18 +46,18 @@ struct InternalNode : public Node {
     Node* left;
     Node* right;
 
-    // Кэшированные суммы детей
+    // Суммы детей
     int totalLength;
     int totalLineCount;
 
     InternalNode(Node* l, Node* r);
     ~InternalNode() override = default;
-    
+
     NodeType getType() const override;
     int getLength() const override;
     int getLineCount() const override;
 
-    void recalc(); // пересчитать totalLength и totalLineCount из детей
+    void recalc(); // пересчитать totalLength и totalLineCount
 };
 
 class Tree {

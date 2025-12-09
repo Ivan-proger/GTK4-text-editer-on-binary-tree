@@ -246,9 +246,11 @@ void BinaryTreeFile::loadTree(Tree& tree) {
     seekg(0, std::ios::beg);
     char magic[4]; // NOSONAR
     read(magic, 4);
-    if (std::memcmp(magic, FILE_MAGIC, 4) != 0) throw BinaryTreeFileError("Bad file magic - not a tree file");
+    if (std::memcmp(magic, FILE_MAGIC, 4) != 0) 
+        throw BinaryTreeFileError("Bad file magic - not a tree file");
 
-    if (read_le_uint32() != FILE_VERSION) throw BinaryTreeFileError("Unsupported file version");
+    if (read_le_uint32() != FILE_VERSION) 
+        throw BinaryTreeFileError("Unsupported file version");
 
     std::int64_t rootOffset = read_le_int64();
     if (rootOffset == OFFSET_NONE) {

@@ -1,0 +1,34 @@
+---
+config:
+  layout: elk
+---
+flowchart TB
+    Start(["Начало"]) --> A{"text != null && len > 0?"}
+    A -- Нет --> B["root = null"]
+    B --> End(["Конец"])
+    A -- Да --> C["buildFromTextRecursive(text, len)"]
+    C --> D{"len ≤ 4096?"}
+    D -- Да --> E["Создать LeafNode:<br>- скопировать text<br>- посчитать lineCount"]
+    E --> Y["root = результат"]
+    D -- Нет --> H["half = len / 2"]
+    H --> I["searchRange = min(256, len/4)"]
+    I --> J["Поиск '\\n' справа от half<br>в пределах searchRange"]
+    J --> K{"Найден '\\n'?"}
+    K -- Да --> L["splitIndex = позиция после '\\n'"]
+    K -- Нет --> M["Поиск '\\n' слева от half<br>в пределах searchRange"]
+    M --> N{"Найден '\\n'?"}
+    N -- Да --> O["splitIndex = позиция после '\\n'"]
+    N -- Нет --> P["splitIndex = half<br>(жёсткое разделение)"]
+    L --> Q
+    O --> Q
+    P --> Q
+    subgraph Q["Построение поддеревьев"]
+        R["buildFromTextRecursive<br>(text, splitIndex)"]
+        S["buildFromTextRecursive<br>(text+splitIndex, len-splitIndex)"]
+    end
+    Q --> T{"Успешно?"}
+    T -- Нет --> U["Очистить частичные результаты"]
+    U --> Error(["Исключение"])
+    T -- Да --> V["Создать InternalNode:<br>- left/right поддеревья<br>- totalLength/totalLineCount"]
+    V --> Y
+    Y --> End

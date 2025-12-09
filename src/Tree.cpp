@@ -704,7 +704,6 @@ void Tree::insert(int pos, const char* data, int len) {
     if (pos > total) pos = total;
 
     root = insertRecursive(root, pos, data, len);
-    // Для простоты — делаем глобальный ребаланс после операции.
 }
 
 void Tree::erase(int pos, int len) {

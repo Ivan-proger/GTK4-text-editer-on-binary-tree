@@ -106,7 +106,8 @@ void CustomTextView::set_cursor_byte_offset(int offset) {
     if (!m_tree) return;
     
     int maxLen = 0;
-    // Используем isEmpty() вместо getRoot(), чтобы быть консистентными
+    
+    // Используем isEmpty() 
     if (!m_tree->isEmpty()) { 
         maxLen = m_tree->getRoot()->getLength();
     }

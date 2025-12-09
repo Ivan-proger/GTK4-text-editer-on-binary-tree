@@ -105,12 +105,19 @@ public:
     void clear();
     bool isEmpty() const;
 
+    // Построить дерево из текста
     void fromText(const char* text, int len);
+
+    // Вытащить дерево в текст
     char* toText();
     
+    // Получить строку по номеру
     char* getLine(int lineNumber);
 
+    // Получить количество строк в дереве
     int getTotalLineCount() const;
+
+    // Вычислить байтовое смещение для начала указанной строки внутри поддерева
     int getOffsetForLine(int lineIndex0Based) const;
 
     // возвращает новый буфер длиной len (или nullptr, если len==0).
@@ -123,7 +130,10 @@ public:
     // или -1 если не найдено.
     int findSubstringLine(const char* pattern, int patternLen) const;
 
+    // Вставка в дерево
     void insert(int pos, const char* data, int len); // публичная обёртка
+
+    // Удалить len байт, начиная с pos
     void erase(int pos, int len);// публичная обёртка
 
 

@@ -3,8 +3,6 @@
 
 #include <gtkmm.h>
 #include "Tree.h"
-#include <vector>
-#include <string>
 
 class CustomTextView : public Gtk::DrawingArea {
 public:

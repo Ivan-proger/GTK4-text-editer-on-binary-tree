@@ -180,14 +180,7 @@ void EditorWindow::on_load_binary() {
 
         // Обновление представления из дерева
         m_custom_view.reload_from_tree();
-
-        // Обновляем snapshot m_last_text safely
-        {
-            char* raw = m_tree.toText();
-            if (raw) { m_last_text.assign(raw); delete[] raw; }
-            else m_last_text.clear();
-        }
-
+        
         // установить фокус на наш виджет (необязательно)
         m_custom_view.grab_focus();
 
@@ -222,23 +215,45 @@ void EditorWindow::on_save_binary() {
 
 void EditorWindow::on_load_text() {
     std::string path = m_file_entry.get_text();
-    if (path.empty()) { set_status("Provide path..."); return; }
-    try {
-        // Чтение файла целиком в std::string
-        std::ifstream in(path, std::ios::binary);
-        if (!in) { set_status("Err open txt: " + path); return; }
-        std::string file_text((std::istreambuf_iterator<char>(in)), {});
+    if (path.empty()) { 
+        set_status("Provide path..."); 
+        return; 
+    }
 
-        //  Инициализация дерева
-        m_syncing = true;
-        m_tree.clear();
-        if (!file_text.empty()) {
-            m_tree.fromText(file_text.c_str(), static_cast<int>(file_text.size()));
+    try {
+        std::ifstream in(path, std::ios::binary);
+        if (!in) { 
+            set_status("Err open txt: " + path); 
+            return; 
         }
-        m_last_text = file_text;
+
+        m_syncing = true;
+        m_tree.clear();         // очищаем дерево перед загрузкой
+
+        const size_t BUF_SIZE = 4096; // 4 КБ буфер
+        char buffer[BUF_SIZE];
+
+        int current_pos = 0; // позиция для вставки в дереве
+        bool first_chunk = true;
+
+        while (in.read(buffer, BUF_SIZE) || in.gcount() > 0) {
+            std::streamsize read_bytes = in.gcount();
+            std::string chunk(buffer, static_cast<size_t>(read_bytes));
+
+            if (first_chunk) {
+                // первый блок используем fromText
+                m_tree.fromText(chunk.c_str(), static_cast<int>(chunk.size()));
+                first_chunk = false;
+            } else {
+                // последующие блоки вставляем в дерево по текущей позиции
+                m_tree.insert(current_pos, chunk.c_str(), static_cast<int>(chunk.size()));
+            }
+
+            current_pos += static_cast<int>(read_bytes); // обновляем позицию
+        }
+
         m_custom_view.reload_from_tree();
         m_custom_view.grab_focus();
-
         m_syncing = false;
 
         set_status("Loaded txt: " + path);

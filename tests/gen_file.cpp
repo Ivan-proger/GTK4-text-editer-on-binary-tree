@@ -42,10 +42,9 @@ std::string generateRandomLine(std::mt19937& rng, int minLen = 50, int maxLen = 
 }
 
 int main() {
-    std::string filename;
+    std::string filename = "testFile.txt";
     std::size_t targetSize;
-    std::cout << "Enter output filename: ";
-    std::cin >> filename;
+
     std::cout << "Enter target file size in bytes: ";
     std::cin >> targetSize;
 

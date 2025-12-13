@@ -343,12 +343,7 @@ void CustomTextView::on_gesture_pressed(int /*n_press*/, double x, double y) {
     
     clear_selection();
     grab_focus();
-
-    // Мы убрали m_dirty / ensure_text_cache, так как данные всегда в дереве.
-    // Просто обновляем размеры, если вдруг дерево поменялось извне (редкий кейс)
-    // update_size_request(); 
-
-    // Вся магия вычисления теперь в одной строчке, которую мы написали ранее:
+    
     int newOffset = get_byte_offset_at_xy(x, y);
 
     m_mouse_selecting = true;

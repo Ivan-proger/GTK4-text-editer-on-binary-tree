@@ -7,7 +7,7 @@
 
   outputs = { nixpkgs, ... }:
   let
-    system = "aarch64-darwin";
+    system = "aarch64-darwin"; # на linux x86-64 тоже все работает без проблем
     pkgs = import nixpkgs { inherit system; };
   in
   {
@@ -29,12 +29,13 @@
         clang-tools          # опционально: clang-tidy/clang-format
         gtkmm4
         libsigcxx
+        
         noto-fonts
         noto-fonts-color-emoji
         liberation_ttf
       ];
 
-    # Настройка Fontconfig для поиска системных шрифтов macOS
+    # Настройка Fontconfig для поиска системных шрифтов macOS не очень то и оно работает на 26 версии ну лан пусть будет
     shellHook = ''
       export PANGOCAIRO_BACKEND=fc
       export FONTCONFIG_PATH=${pkgs.fontconfig.out}/etc/fonts

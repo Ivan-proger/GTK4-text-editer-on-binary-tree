@@ -11,7 +11,7 @@
 // === ctor/dtor =============================================================
 CustomTextView::CustomTextView() {
     m_font_desc.set_family("Monospace");
-    m_font_desc.set_size(10 * PANGO_SCALE);
+    m_font_desc.set_size(14 * PANGO_SCALE);
 
     // Один раз создан дальше просто используем его
     m_layout = create_pango_layout(""); // один раз
@@ -358,20 +358,6 @@ void CustomTextView::on_motion(double x, double y) {
 bool CustomTextView::on_scroll(double /*dx*/, double /*dy*/) {
     // not intercepted
     return false;
-}
-
-
-
-void CustomTextView::recompute_metrics() {
-    auto layout = create_pango_layout("X");
-    layout->set_font_description(m_font_desc);
-    int w = 0, h = 0;
-    layout->get_pixel_size(w, h);
-    m_line_height = h > 0 ? h : 16;
-
-    layout->set_text("M");
-    layout->get_pixel_size(w, h);
-    m_char_width = w > 0 ? w : 8;
 }
 
 void CustomTextView::update_size_request() {

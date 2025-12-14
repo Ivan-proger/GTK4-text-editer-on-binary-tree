@@ -46,7 +46,7 @@ private:
     static constexpr int TOP_MARGIN = 4;
     
     void update_size_request();
-    void recompute_metrics();
+
 
     // Получает текст конкретной строки из дерева и измеряет X
     int get_byte_offset_at_xy(double x, double y);

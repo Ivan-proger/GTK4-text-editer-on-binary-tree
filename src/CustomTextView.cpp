@@ -395,10 +395,8 @@ void CustomTextView::draw_with_cairo(const Cairo::RefPtr<Cairo::Context>& cr, in
         cr->paint();
         return;
     }
-
     cr->set_source_rgb(0.3, 0.3, 0.3);
     cr->paint();
-
     if (m_tree->isEmpty()) {
         if (m_show_caret) {
             cr->set_source_rgb(0, 0, 0);
@@ -407,12 +405,12 @@ void CustomTextView::draw_with_cairo(const Cairo::RefPtr<Cairo::Context>& cr, in
         }
         return;
     }
-
     double clip_x1, clip_y1, clip_x2, clip_y2;
     cr->get_clip_extents(clip_x1, clip_y1, clip_x2, clip_y2);
-    int total_lines = m_tree->getTotalLineCount();
 
+    int total_lines = m_tree->getTotalLineCount();
     int first_line = static_cast<int>((clip_y1 - TOP_MARGIN) / m_line_height);
+
     int last_line = static_cast<int>((clip_y2 - TOP_MARGIN) / m_line_height) + 1;
     first_line = std::clamp(first_line, 0, std::max(0, total_lines - 1));
     last_line = std::clamp(last_line, 0, total_lines);
@@ -421,80 +419,75 @@ void CustomTextView::draw_with_cairo(const Cairo::RefPtr<Cairo::Context>& cr, in
     Gdk::RGBA text_color("white");
     Gdk::RGBA sel_bg(0.2, 0.4, 0.8, 0.6);
 
-    // подготовка для вычисления позиции курсора один раз
+    // Подготовка для вычисления позиции курсора один раз
     int cursorLineIdx = -1;
     int cursor_cx = -1;
     int cursor_cy = -1;
     if (m_show_caret && m_cursor_byte_offset >= 0) {
         cursorLineIdx = find_line_index_by_byte_offset(m_cursor_byte_offset);
     }
-
-    // Цикл ТОЛЬКО по видимым строкам — в нём теперь и вычисляем позицию курсора, если она в видимой строке
+    
+    // ОПТИМИЗАЦИЯ: Вычисляем offset только для первой видимой строки (O(log M))
+    // Затем кумулятивно прибавляем длины строк + 1 байт за \n (для не-последних строк)
+    int current_offset = (first_line > 0) ? m_tree->getOffsetForLine(first_line) : 0;  // Для line 0 offset всегда 0
+    
+    // Цикл ТОЛЬКО по видимым строкам
     for (int i = first_line; i < last_line; ++i) {
         const std::string& fullLine = get_cached_line(i);
-        int lineLen = static_cast<int>(fullLine.size()); // Длина в байтах, включая '\n'
-        int y_pos = TOP_MARGIN + i * m_line_height;
-
-        // Вычисляем глобальный сдвиг строки ДО изменения lineLen
-        int lineStartOffset = m_tree->getOffsetForLine(i);
-        int lineEndOffset = lineStartOffset + lineLen; // полная длина строки с \n
-
-        // Готовим текст для отрисовки (убираем '\n')
+        int lineLen = static_cast<int>(fullLine.size());  // Длина в байтах, БЕЗ trailing '\n'
+        
+        // Используем current_offset как lineStartOffset (глобальный байтовый offset начала строки)
+        int lineStartOffset = current_offset;
+        int lineEndOffset = lineStartOffset + lineLen;  // Конец строки, позиция ПЕРЕД '\n' (или конец файла)
+        
+        // Готовим текст для отрисовки: копируем fullLine и убираем trailing '\n' (если есть, хотя по логике не должно быть)
         std::string line_text = fullLine;
         if (!line_text.empty() && line_text.back() == '\n') {
-            line_text.pop_back();
+            line_text.pop_back();  // Теперь line_text — видимый текст БЕЗ '\n' (сохранена оригинальная логика)
         }
-
+        int display_len = static_cast<int>(line_text.length());  // Длина видимого текста
+        
+        // Y-позиция строки 
+        int y_pos = TOP_MARGIN + i * m_line_height;
+        
         try {
-            // Устанавливаем текст в layout ОДИН РАЗ на строку
+            // Устанавливаем текст в layout ОДИН РАЗ на строку (только видимый текст)
             m_layout->set_text(Glib::ustring(line_text));
-
-            // Отрисовка выделения (Selection)
+            
+            // Отрисовка выделения (Selection) — логика сохранена: пересечение с глобальными offsets (до '\n')
             if (m_sel_len > 0) {
                 int sel_start_global = m_sel_start;
                 int sel_end_global = m_sel_start + m_sel_len;
-
-                // Проверяем пересечение выделения с текущей строкой
+                // Проверяем пересечение выделения с текущей строкой (до позиции '\n')
                 if (sel_start_global < lineEndOffset && sel_end_global > lineStartOffset) {
-                    // Вычисляем локальные границы выделения в этой строке
+                    // Локальные границы выделения: относительно начала, clamped к видимому тексту
                     int local_start = std::max(sel_start_global, lineStartOffset) - lineStartOffset;
                     int local_end = std::min(sel_end_global, lineEndOffset) - lineStartOffset;
-
-                    // Ограничиваем индексы длиной строки без \n
-                    int line_text_length = static_cast<int>(line_text.length()); // Без \n
-                    local_start = std::clamp(local_start, 0, line_text_length);
-                    local_end = std::clamp(local_end, 0, line_text_length);
-
-                    // Проверяем, есть ли что выделять
+                    local_start = std::clamp(local_start, 0, display_len);
+                    local_end = std::clamp(local_end, 0, display_len);
                     if (local_start < local_end) {
                         Pango::Rectangle rect_start, rect_end;
-
-                        // Получаем позиции для начала и конца выделения
                         m_layout->get_cursor_pos(local_start, rect_start, rect_start);
                         m_layout->get_cursor_pos(local_end, rect_end, rect_end);
-
                         int x1 = LEFT_MARGIN + rect_start.get_x() / PANGO_SCALE;
                         int x2 = LEFT_MARGIN + rect_end.get_x() / PANGO_SCALE;
-
                         cr->set_source_rgba(sel_bg.get_red(), sel_bg.get_green(), sel_bg.get_blue(), sel_bg.get_alpha());
                         cr->rectangle(x1, y_pos, x2 - x1, m_line_height);
                         cr->fill();
                     }
                 }
             }
-
-            // Отрисовка текста 
+            
+            // Отрисовка текста (видимого, без '\n')
             cr->move_to(LEFT_MARGIN, y_pos);
             cr->set_source_rgb(text_color.get_red(), text_color.get_green(), text_color.get_blue());
             pango_cairo_show_layout(cr->cobj(), m_layout->gobj());
-
-            // --- ВАЖНО: вычисляем позицию курсора именно здесь, если курсор на этой строке ---
+            
+            // Вычисление позиции курсора, если он на этой строке — логика сохранена
             if (cursorLineIdx == i) {
-                int lineStart = lineStartOffset;
-                int offsetInLine_bytes = m_cursor_byte_offset - lineStart;
-                int display_len = static_cast<int>(line_text.length());
+                int offsetInLine_bytes = m_cursor_byte_offset - lineStartOffset;  // Относительно начала строки (до '\n')
+                // Clamp к видимому: если курсор на '\n' (offsetInLine == lineLen), станет display_len (конец строки)
                 int cursor_index_for_pango = std::clamp(offsetInLine_bytes, 0, display_len);
-
                 try {
                     Pango::Rectangle pos;
                     m_layout->get_cursor_pos(cursor_index_for_pango, pos, pos);
@@ -505,16 +498,21 @@ void CustomTextView::draw_with_cairo(const Cairo::RefPtr<Cairo::Context>& cr, in
                     cursor_cx = -1;
                 }
             }
-
         } catch (const Glib::Error& ex) {
             std::cerr << "Invalid UTF-8 in line " << i << ": " << ex.what() << std::endl;
             cr->set_source_rgb(1, 0, 0);
             cr->rectangle(LEFT_MARGIN, y_pos, width - LEFT_MARGIN, m_line_height);
             cr->stroke();
         }
+        
+        // offset для следующей строки: прибавляем длину + 1 байт за '\n' (только если это не последняя строка в документе)
+        current_offset += lineLen;
+        if (i < total_lines - 1) {
+            current_offset += 1;  // Учёт байта '\n' после строки
+        }
     }
-
-    // Отрисовка курсора (после основного текста) — теперь без повторного set_text
+    
+    // Отрисовка курсора 
     if (m_show_caret && m_cursor_byte_offset >= 0 && cursor_cx >= 0) {
         cr->set_source_rgb(0, 0, 0);
         cr->rectangle(cursor_cx, cursor_cy, 1.5, m_line_height);

@@ -8,38 +8,14 @@
 #include <iostream> // для простого логирования ошибок
 #include <cassert>
 
-// --- UTF-8 helpers-------------------------------
-// Возвращает индекс lead-byte, который лежит <= pos-1 (т.е. начало символа,
-// охватывающего байт pos-1), или 0 если не найдено. Без UB при pos == data_len.
-static size_t utf8_prev_boundary(const char* data, size_t data_len, size_t pos) {
-    if (data_len == 0) return 0;
-    if (pos == 0) return 0;
-    if (pos > data_len) pos = data_len;
-
-    // Начинаем с байта перед pos — это безопасно
-    size_t i = pos - 1;
-    // Если текущий байт continuation (10xxxxxx), сдвигаемся влево до lead-byte
-    while (i > 0 && (static_cast<unsigned char>(data[i]) & 0xC0) == 0x80) --i;
-    return i;
-}
-
-// Возвращает позицию lead-byte для следующего символа (т.е. начало символа,
-// который начинается не раньше чем в pos). Если pos уже указывает на lead-byte,
-// вернёт pos. Если pos >= data_len — вернёт data_len.
-static size_t utf8_next_boundary(const char* data, size_t data_len, size_t pos) {
-    if (data_len == 0) return 0;
-    if (pos >= data_len) return data_len;
-    size_t i = pos;
-    // Если pos указывает внутри continuation байтов, продвигаемся вправо
-    while (i < data_len && (static_cast<unsigned char>(data[i]) & 0xC0) == 0x80) ++i;
-    return i;
-}
-
-
 // === ctor/dtor =============================================================
 CustomTextView::CustomTextView() {
     m_font_desc.set_family("Monospace");
     m_font_desc.set_size(10 * PANGO_SCALE);
+
+    // Один раз создан дальше просто используем его
+    m_layout = create_pango_layout(""); // один раз
+    m_layout->set_font_description(m_font_desc);
 
     set_focusable(true);
 
@@ -93,11 +69,13 @@ void CustomTextView::set_tree(Tree* tree) {
 }
 
 void CustomTextView::reload_from_tree() {
+    m_line_cache.clear(); // инвалидация кэша при смене дерева
     update_size_request();
     queue_draw();
 }
 
 void CustomTextView::mark_dirty() {
+    m_line_cache.clear(); // инвалидация кэша при смене дерева
     m_dirty = true;
     queue_draw();
 }
@@ -158,6 +136,7 @@ bool CustomTextView::on_key_pressed(guint keyval, guint /*keycode*/, Gdk::Modifi
         } catch (const std::exception& e) {
             std::cerr << "Tree::erase error: " << e.what() << '\n';
         }
+        // Инвалидация кэша и обновление UI
         clear_selection();
         reload_from_tree(); // Теперь это быстрая операция
         set_cursor_byte_offset(start);
@@ -314,6 +293,7 @@ bool CustomTextView::on_key_pressed(guint keyval, guint /*keycode*/, Gdk::Modifi
         } catch (const std::exception& e) {
             std::cerr << "Tree::insert error: " << e.what() << '\n';
         }
+        // Инвалидация кэша и обновление UI
         reload_from_tree();
         set_cursor_byte_offset(m_cursor_byte_offset + bytes);
         return true;
@@ -411,21 +391,36 @@ void CustomTextView::update_size_request() {
     set_size_request(-1, h);
 }
 
+// Получить кешированую строку
+const std::string& CustomTextView::get_cached_line(int line) {
+    auto it = m_line_cache.find(line);
+    if (it != m_line_cache.end()) {
+        return it->second;
+    }
 
-// === ОТРИСОВКА (СЕРДЦЕ ОПТИМИЗАЦИИ) ===
+    // Единственный вызов getLine()
+    auto raw = m_tree->getLine(line);
+
+    auto res = m_line_cache.emplace(
+        line,
+        std::string(raw)
+    );
+
+    return res.first->second;
+}
+
+// === ОТРИСОВКА (ФИНАЛЬНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ) ===
 void CustomTextView::draw_with_cairo(const Cairo::RefPtr<Cairo::Context>& cr, int width, int height) {
     if (!m_tree) {
-        // Заливаем белым, если дерева нет
         cr->set_source_rgb(1.0, 1.0, 1.0);
         cr->paint();
         return;
     }
 
     // Рисуем фон
-    cr->set_source_rgb(0.3, 0.3, 0.3); // Или цвет из темы
+    cr->set_source_rgb(0.3, 0.3, 0.3);
     cr->paint();
 
-    // !!! ВАЖНО: Если дерево пустое, рисуем только курсор (если нужен) и выходим
     if (m_tree->isEmpty()) {
         if (m_show_caret) {
             cr->set_source_rgb(0, 0, 0);
@@ -438,125 +433,120 @@ void CustomTextView::draw_with_cairo(const Cairo::RefPtr<Cairo::Context>& cr, in
     // Определяем видимую область (Culling)
     double clip_x1, clip_y1, clip_x2, clip_y2;
     cr->get_clip_extents(clip_x1, clip_y1, clip_x2, clip_y2);
-
     int total_lines = m_tree->getTotalLineCount();
     
-    // Вычисляем индексы первой и последней видимой строки
     int first_line = static_cast<int>((clip_y1 - TOP_MARGIN) / m_line_height);
     int last_line = static_cast<int>((clip_y2 - TOP_MARGIN) / m_line_height) + 1;
-
-    // Ограничиваем диапазоном [0, total_lines]
     first_line = std::clamp(first_line, 0, std::max(0, total_lines - 1));
     last_line = std::clamp(last_line, 0, total_lines);
     if (last_line <= first_line) last_line = first_line + 1;
 
-    // Цвета
-    Gdk::RGBA text_color("black");
-    Gdk::RGBA sel_bg(0.2, 0.4, 0.8, 0.4); // Выделение
+    Gdk::RGBA text_color("white");
+    Gdk::RGBA sel_bg(0.2, 0.4, 0.8, 0.6);
+
+    int lineStartOffset = 0;
+    if (first_line < total_lines) {
+        lineStartOffset = m_tree->getOffsetForLine(first_line);
+    }
 
     // Цикл ТОЛЬКО по видимым строкам
     for (int i = first_line; i < last_line; ++i) {
-        // === МАГИЯ ДЕРЕВА ===
-        // Получаем текст только одной строки.
-        // getLine возвращает char*, который мы должны освободить.
-        char* rawLine = m_tree->getLine(i);
-        if (!rawLine) continue;
-
-        // Используем unique_ptr для авто-удаления rawLine
-        std::unique_ptr<char[]> lineGuard(rawLine);
-        std::string lineStr(rawLine); 
-
-        // Если строка оканчивается на \n, Pango лучше его не скармливать для отрисовки
-        if (!lineStr.empty() && lineStr.back() == '\n') {
-            lineStr.pop_back();
-        }
-
-        int lineStartOffset = m_tree->getOffsetForLine(i);
-        int lineEndOffset = lineStartOffset + (int)std::strlen(rawLine); // с учетом \n
+        const std::string& fullLine = get_cached_line(i);
         
+        // Получаем текст строки для отрисовки, убирая '\n'
+        std::string line_text = fullLine;
+        if (!line_text.empty() && line_text.back() == '\n') {
+            line_text.pop_back();
+        }
+        
+        int lineLen = static_cast<int>(fullLine.size()); // Длина в байтах, включая '\n'
         int y_pos = TOP_MARGIN + i * m_line_height;
+        int lineEndOffset = lineStartOffset + lineLen;
 
-        // --- Отрисовка выделения (Selection) ---
-        int sel_s = m_sel_start;
-        int sel_e = m_sel_start + m_sel_len;
+        try {
+            // Устанавливаем текст в Pango Layout. Glib::ustring проверит UTF-8 на валидность.
+            Glib::ustring u_line_text(line_text);
+            m_layout->set_text(u_line_text);
 
-        // Пересекается ли глобальное выделение с этой строкой?
-        if (m_sel_len > 0 && sel_s < lineEndOffset && sel_e > lineStartOffset) {
-            int local_s = std::max(sel_s, lineStartOffset) - lineStartOffset;
-            int local_e = std::min(sel_e, lineEndOffset) - lineStartOffset;
-            
-            // Layout для измерения ширины выделения
-            auto layout = create_pango_layout(lineStr);
-            layout->set_font_description(m_font_desc);
-            
-            // Конвертируем байтовые индексы в пиксели X
-            int x1, x2;
-            Pango::Rectangle rect;
-            
-            // X1
-            layout->get_cursor_pos(std::min((int)lineStr.size(), local_s), rect, rect);
-            x1 = LEFT_MARGIN + rect.get_x() / PANGO_SCALE;
-            
-            // X2
-            layout->get_cursor_pos(std::min((int)lineStr.size(), local_e), rect, rect);
-            x2 = LEFT_MARGIN + rect.get_x() / PANGO_SCALE;
-            
-            // Если выделение идет дальше конца текста (на символ \n), добавляем ширину пробела
-            if (local_e > (int)lineStr.size()) {
-                x2 += 8; 
+            // --- 1. Отрисовка выделения (Selection) ---
+            if (m_sel_len > 0) {
+                // Вычисляем байтовые смещения выделения относительно начала строки
+                int sel_start_byte = std::max(m_sel_start, lineStartOffset) - lineStartOffset;
+                int sel_end_byte = std::min(m_sel_start + m_sel_len, lineEndOffset) - lineStartOffset;
+
+                // Layout не содержит '\n', поэтому ограничиваем смещения длиной отображаемого текста
+                int display_len = static_cast<int>(line_text.length());
+                int start_index_for_pango = std::clamp(sel_start_byte, 0, display_len);
+                int end_index_for_pango = std::clamp(sel_end_byte, 0, display_len);
+
+                if (start_index_for_pango < end_index_for_pango) {
+                    Pango::Rectangle rect1, rect2;
+                    // get_cursor_pos ожидает байтовый индекс, передаем его напрямую
+                    m_layout->get_cursor_pos(start_index_for_pango, rect1, rect1);
+                    m_layout->get_cursor_pos(end_index_for_pango, rect2, rect2);
+
+                    int x1 = LEFT_MARGIN + rect1.get_x() / PANGO_SCALE;
+                    int x2 = LEFT_MARGIN + rect2.get_x() / PANGO_SCALE;
+
+                    cr->set_source_rgba(sel_bg.get_red(), sel_bg.get_green(), sel_bg.get_blue(), sel_bg.get_alpha());
+                    cr->rectangle(x1, y_pos, std::max(1, x2 - x1), m_line_height);
+                    cr->fill(); }
             }
 
-            cr->set_source_rgba(sel_bg.get_red(), sel_bg.get_green(), sel_bg.get_blue(), sel_bg.get_alpha());
-            cr->rectangle(x1, y_pos, x2 - x1, m_line_height);
-            cr->fill();
+            // --- 2. Отрисовка текста ---
+            cr->move_to(LEFT_MARGIN, y_pos);
+            cr->set_source_rgb(text_color.get_red(), text_color.get_green(), text_color.get_blue());
+            pango_cairo_show_layout(cr->cobj(), m_layout->gobj());
+
+        } catch (const Glib::Error& ex) {
+            // Обработка невалидного UTF-8, полученного из Tree
+            std::cerr << "Invalid UTF-8 in line " << i << ": " << ex.what() << std::endl;
+            cr->set_source_rgb(1, 0, 0);
+            cr->rectangle(LEFT_MARGIN, y_pos, width - LEFT_MARGIN, m_line_height);
+            cr->stroke();
         }
 
-        // --- Отрисовка текста ---
-        if (!lineStr.empty()) {
-            auto layout = create_pango_layout(lineStr);
-            layout->set_font_description(m_font_desc);
-            
-            cr->move_to(LEFT_MARGIN, y_pos);
-            cr->set_source_rgb(1,1,1);
-            pango_cairo_show_layout(cr->cobj(), layout->gobj());
-        }
+        // Инкрементируем lineStartOffset на полную длину строки (включая '\n')
+        lineStartOffset += lineLen;
     }
 
-    // Рисуем курсор
-    // Для оптимизации рисуем только если курсор попадает в видимые строки
+    // --- 3. Отрисовка курсора ---
     if (m_show_caret && m_cursor_byte_offset >= 0) {
         int cursorLineIdx = find_line_index_by_byte_offset(m_cursor_byte_offset);
-        
         if (cursorLineIdx >= first_line && cursorLineIdx < last_line) {
-            char* rawLine = m_tree->getLine(cursorLineIdx);
-            if (rawLine) {
-                std::unique_ptr<char[]> guard(rawLine);
-                std::string lineStr(rawLine);
-                if (!lineStr.empty() && lineStr.back() == '\n') lineStr.pop_back();
+            const std::string& fullLine = get_cached_line(cursorLineIdx);
+            std::string line_text = fullLine;
+            if (!line_text.empty() && line_text.back() == '\n') {
+                line_text.pop_back();
+            }
+            
+            int lineStart = m_tree->getOffsetForLine(cursorLineIdx);
+            int offsetInLine_bytes = m_cursor_byte_offset - lineStart;
 
-                int lineStart = m_tree->getOffsetForLine(cursorLineIdx);
-                int offsetInLine = m_cursor_byte_offset - lineStart;
-                
-                // Защита от выхода за границы строки
-                if (offsetInLine > (int)lineStr.size()) offsetInLine = (int)lineStr.size();
+            // ВАЖНО: get_cursor_pos ожидает байтовый индекс.
+            // Но layout не содержит '\n', поэтому смещение не может быть больше длины line_text.
+            int display_len = static_cast<int>(line_text.length());
+            int cursor_index_for_pango = std::clamp(offsetInLine_bytes, 0, display_len);
 
-                auto layout = create_pango_layout(lineStr);
-                layout->set_font_description(m_font_desc);
+            try {
+                Glib::ustring u_line_text(line_text);
+                m_layout->set_text(u_line_text);
                 
                 Pango::Rectangle pos;
-                layout->get_cursor_pos(offsetInLine, pos, pos);
-                
+                // Передаем байтовый индекс, который соответствует позиции в line_text
+                m_layout->get_cursor_pos(cursor_index_for_pango, pos, pos);
+
                 int cx = LEFT_MARGIN + pos.get_x() / PANGO_SCALE;
                 int cy = TOP_MARGIN + cursorLineIdx * m_line_height;
-
                 cr->set_source_rgb(0, 0, 0);
                 cr->rectangle(cx, cy, 1.5, m_line_height);
                 cr->fill();
+            } catch (const Glib::Error& ex) {
+                 std::cerr << "Invalid UTF-8 for cursor on line " << cursorLineIdx << ": " << ex.what() << std::endl;
             }
         }
     }
 }
-
 
 int CustomTextView::get_byte_offset_at_xy(double x, double y) {
     if (!m_tree) return 0;

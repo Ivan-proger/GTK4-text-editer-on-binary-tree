@@ -55,8 +55,15 @@ private:
     // (так как в Tree нет прямого метода getLineByOffset, но есть getOffsetForLine)
     int find_line_index_by_byte_offset(int byteOffset) const;
 
+    // Получить кешированую строку
+    const std::string& get_cached_line(int line);
 private:
     Tree* m_tree{nullptr};
+
+    // Pango layout можно переиспользовать между строками
+    Glib::RefPtr<Pango::Layout> m_layout;
+    // Кеш видимых строк
+    std::unordered_map<int, std::string> m_line_cache;
 
     Pango::FontDescription m_font_desc;
     int m_line_height{16};
@@ -69,11 +76,9 @@ private:
     int m_sel_start = -1; // -1 => нет выделения
     int m_sel_len = 0;
 
-    // в private:
-    bool m_mouse_selecting = false;   // true — идёт drag-selection
+    bool m_mouse_selecting = false;   // true когда идёт drag-selection
     int m_sel_anchor = -1;            // байтовый оффсет начала выделения (якорь)
     int m_desired_column_px = -1;     // предпочитаемая горизонтальная позиция (px) для Up/Down
-
 
     bool m_dirty{true};
 };

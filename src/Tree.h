@@ -2,7 +2,8 @@
 #define TREE_H
 
 
-//! КРАЙ ПО КОТОРОМУ РЕЖЕТСЯ ЛИСТ - НЕКОРРЕКТНОЕ ПОВЕДЕНИЕ ПОСЛЕ 
+//! КРАЙ ПО КОТОРОМУ РЕЖЕТСЯ ЛИСТ - НЕКОРРЕКТНОЕ ПОВЕДЕНИЕ ПОСЛЕ ПОКА ЧТО ПРОСТО ЗАГЛУШКА НЕ ВАЖНО
+//! ПОСЛЕ ПОКА ЧТО ПРОСТО ЗАГЛУШКА НЕ ВАЖНО
 const int MAX_LEAF_SIZE = 4096; //TODO: фикс
 
 enum class NodeType : char {
@@ -98,46 +99,45 @@ private:
     int findSubstringRecursive(Node* node, const char* pattern, int patternLen, const int* lps, int& j, int& processed) const;
 
 public:
-    Tree();
-    ~Tree();
-
-    void clear();
-    bool isEmpty() const;
-
+    Tree(); // O(1) - Простая инициализация
+    ~Tree(); // O(N) - Вызывает clear(), где N - количество узлов в дереве
+    
+    void clear(); // O(N) - Рекурсивно удаляет все узлы дерева
+    bool isEmpty() const; // O(1) - Простая проверка указателя root
+    
     // Построить дерево из текста
-    void fromText(const char* text, int len);
-
+    void fromText(const char* text, int len); // O(N) - где N - длина текста. Рекурсивно делит текст пополам
+    
     // Вытащить дерево в текст
-    char* toText();
+    char* toText(); // O(N) - где N - общая длина текста. Выделяет память и рекурсивно собирает текст
     
     // Получить строку по номеру
-    char* getLine(int lineNumber);
-
+    char* getLine(int lineNumber); // O(log M + L) - где M - количество узлов, L - максимальная длина листа
+    
     // Получить количество строк в дереве
-    int getTotalLineCount() const;
-
+    int getTotalLineCount() const; // O(1) - Просто возвращает кэшированное значение из корня
+    
     // Вычислить байтовое смещение для начала указанной строки внутри поддерева
-    int getOffsetForLine(int lineIndex0Based) const;
-
+    int getOffsetForLine(int lineIndex0Based) const; // O(log M + L) - где M - количество узлов, L - максимальная длина листа
+    
     // возвращает новый буфер длиной len (или nullptr, если len==0).
     // Владелец вызывающий код должен вызвать delete[]
-    char* getTextRange(int offset, int len) const;
+    char* getTextRange(int offset, int len) const; // O(log M + len) - где M - количество узлов
 
-    int findSubstring(const char* pattern, int patternLen) const; // offset или -1
-
+    int findSubstring(const char* pattern, int patternLen) const; // O(N) - где N - общая длина текста. Использует алгоритм Кнута-Морриса-Пратта
+    
     // Возвращает номер строки (0-based), в которой начинается совпадение шаблона,
     // или -1 если не найдено.
-    int findSubstringLine(const char* pattern, int patternLen) const;
-
+    int findSubstringLine(const char* pattern, int patternLen) const; // O(N) - где N - общая длина текста
+    
     // Вставка в дерево
-    void insert(int pos, const char* data, int len); // публичная обёртка
+    void insert(int pos, const char* data, int len); // O(log M + L) - где M - количество узлов, L - длина вставляемых данных
 
     // Удалить len байт, начиная с pos
-    void erase(int pos, int len);// публичная обёртка
-
-
-    Node* getRoot() const;
-    void setRoot(Node* newRoot);
+    void erase(int pos, int len); // O(log M + L) - где M - количество узлов, L - длина удаляемых данных
+    
+    Node* getRoot() const; // O(1) - Простое получение указателя
+    void setRoot(Node* newRoot); // O(1) - Простая установка указателя
 };
 
 #endif // TREE_H
